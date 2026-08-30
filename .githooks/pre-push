@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# 1. Verify every commit being pushed is GPG-signed.
+# 2. Run the test suite before anything leaves the laptop.
+#
+# Reads the standard pre-push input: <local-ref> <local-sha> <remote-ref> <remote-sha>
+
+ZERO_SHA="0000000000000000000000000000000000000000"
+pushing_commits=false
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [[ "$local_sha" == "$ZERO_SHA" ]]; then
+    continue  # branch deletion, nothing to verify
+  fi
+
+  if [[ "$remote_sha" == "$ZERO_SHA" ]]; then
+    # New branch: only verify commits not reachable from any remote
+    rev_args=("$local_sha" "--not" "--remotes")
+  else
+    rev_args=("$remote_sha..$local_sha")
+  fi
+
+  while IFS= read -r commit; do
+    pushing_commits=true
+    if ! git verify-commit "$commit" > /dev/null 2>&1; then
+      cat >&2 <<MSG
+
+🔒 Unsigned Commit Blocked
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Commit $commit is not GPG-signed.
+
+All commits must be signed before pushing.
+
+To sign commits automatically:
+  git config --global user.signingkey <KEY_ID>
+  git config --global commit.gpgsign true
+  # or run: just init
+
+To sign an existing commit:
+  git rebase --exec 'git commit --amend --no-edit -S' origin/main
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MSG
+      exit 1
+    fi
+  done < <(git rev-list "${rev_args[@]}" 2>/dev/null)
+done
+
+if [[ "$pushing_commits" == true ]]; then
+  echo "🦀 cargo test"
+  if ! cargo test --all-features --quiet; then
+    cat >&2 <<MSG
+
+🦀 Tests Failed
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Fix the failing tests before pushing.
+Intentionally pushing anyway? \`git push --no-verify\` skips hooks.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MSG
+    exit 1
+  fi
+fi

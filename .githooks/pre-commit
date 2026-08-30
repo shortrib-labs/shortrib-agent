@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ── Branch naming ──────────────────────────────────────────────────────────
+BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+
+BRANCH_PATTERN='^(build|chore|ci|docs|feature|fix|performance|refactor|revert|style|test)/[^/]+/.+$'
+
+# Skip detached HEAD, and long-lived integration branches that don't follow the feature pattern
+if [[ -n "$BRANCH" && ! "$BRANCH" =~ ^(main|master|develop)$ ]]; then
+  if ! echo "$BRANCH" | grep -qE "$BRANCH_PATTERN"; then
+    cat >&2 <<MSG
+
+🌿 Branch Naming Convention Violation
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Branch "$BRANCH" does not follow the required format.
+
+Required: <type>/<user>/<description>
+  type: build, chore, ci, docs, feature, fix, performance, refactor, revert, style, test
+  user: your GitHub username (e.g. crdant)
+  description: kebab-cased summary
+
+Examples:
+  ✅ feature/crdant/add-login
+  ✅ fix/crdant/null-pointer
+  ❌ $BRANCH
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MSG
+    exit 1
+  fi
+fi
+
+# ── Rust checks (only when Rust sources or manifests are staged) ──────────
+if git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$|^Cargo\.(toml|lock)$'; then
+  echo "🦀 cargo fmt --check"
+  if ! cargo fmt --all --check; then
+    cat >&2 <<MSG
+
+🦀 Formatting Check Failed
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Run \`cargo fmt --all\` (or \`just fmt\`) and re-stage your changes.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MSG
+    exit 1
+  fi
+
+  echo "🦀 cargo clippy"
+  if ! cargo clippy --all-targets --all-features --quiet -- -D warnings; then
+    cat >&2 <<MSG
+
+🦀 Clippy Check Failed
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Fix the warnings above (CI runs clippy with -D warnings too).
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MSG
+    exit 1
+  fi
+fi
