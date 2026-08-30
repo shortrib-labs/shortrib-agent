@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+step() {
+    printf '\n[%s] %s\n' "$(date -u +%H:%M:%S)" "$1"
+}
+
+step "Installing the stable Rust toolchain"
+if [[ -f "$HOME/.cargo/env" ]]; then
+    # shellcheck disable=SC1091
+    source "$HOME/.cargo/env"
+fi
+
+if ! command -v rustup >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --profile minimal --default-toolchain none
+
+    # rustup's installer cannot update this script's environment.
+    # shellcheck disable=SC1091
+    source "$HOME/.cargo/env"
+fi
+
+rustup toolchain install stable --profile minimal --component rustfmt,clippy
+rustup default stable
+
+step "Installing repository development tools"
+if ! command -v just >/dev/null 2>&1; then
+    cargo install just --locked
+fi
+
+step "Fetching locked dependencies"
+cargo fetch --locked
+
+step "Prebuilding all targets"
+cargo build --all-targets --all-features --locked
+
+step "Orb setup complete"
