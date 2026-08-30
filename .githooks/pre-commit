@@ -4,7 +4,7 @@ set -euo pipefail
 # ── Branch naming ──────────────────────────────────────────────────────────
 BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
 
-BRANCH_PATTERN='^(build|chore|ci|docs|feature|fix|performance|refactor|revert|style|test)/[^/]+/.+$'
+BRANCH_PATTERN='^(build|chore|ci|docs|feature|fix|performance|refactor|revert|spike|style|test)/[^/]+/.+$'
 
 # Skip detached HEAD, and long-lived integration branches that don't follow the feature pattern
 if [[ -n "$BRANCH" && ! "$BRANCH" =~ ^(main|master|develop)$ ]]; then
