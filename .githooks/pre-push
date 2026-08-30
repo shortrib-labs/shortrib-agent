@@ -23,7 +23,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
   while IFS= read -r commit; do
     pushing_commits=true
-    if ! git verify-commit "$commit" > /dev/null 2>&1; then
+    # Amp uses a signing-only SSH helper, so verification must call OpenSSH directly.
+    if ! git -c gpg.ssh.program=ssh-keygen verify-commit "$commit" > /dev/null 2>&1; then
       cat >&2 <<MSG
 
 🔒 Unsigned Commit Blocked

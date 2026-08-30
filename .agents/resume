@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$(git config --get gpg.format || true)" == "ssh" ]]; then
+    login="$(gh api user --jq .login)"
+    git_dir="$(git rev-parse --absolute-git-dir)"
+    allowed_signers="$git_dir/amp-allowed-signers"
+
+    gh api "users/$login/ssh_signing_keys" --paginate \
+        --jq '.[] | "* \(.key)"' > "$allowed_signers"
+
+    if [[ ! -s "$allowed_signers" ]]; then
+        printf 'No GitHub SSH signing keys found for %s.\n' "$login" >&2
+        exit 1
+    fi
+
+    git config --local gpg.ssh.allowedSignersFile "$allowed_signers"
+fi
