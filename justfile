@@ -47,6 +47,10 @@ test:
 build:
     cargo build --release --locked
 
+# Verify the public Calendar MCP OAuth metadata without credentials
+verify-calendar-metadata:
+    scripts/verify-google-calendar-mcp.sh
+
 # Run the project locally
 dev:
     cargo run
