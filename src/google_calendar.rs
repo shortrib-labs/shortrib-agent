@@ -239,17 +239,26 @@ impl GoogleCalendarMcp {
             .await
             .context("failed to initialize Google Calendar OAuth")?;
         if let Some(vault) = &self.credential_vault {
-            manager.set_credential_store(vault.store(user));
+            let credential_store = vault.store(user);
+            manager.set_credential_store(credential_store.clone());
             if manager
                 .initialize_from_store()
                 .await
                 .context("failed to restore Google Calendar OAuth credentials")?
             {
-                let peer = self
-                    .connect(user.clone(), manager)
-                    .await
-                    .context("failed to restore Google Calendar MCP connection")?;
-                return Ok(Ok(peer));
+                match self.connect(user.clone(), manager).await {
+                    Ok(peer) => return Ok(Ok(peer)),
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "Google Calendar connection could not be restored; starting reauthorization"
+                        );
+                        manager = AuthorizationManager::new(&self.config.mcp_url)
+                            .await
+                            .context("failed to reinitialize Google Calendar OAuth")?;
+                        manager.set_credential_store(credential_store);
+                    }
+                }
             }
         }
 

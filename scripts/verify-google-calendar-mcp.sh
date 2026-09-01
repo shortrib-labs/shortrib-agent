@@ -44,7 +44,8 @@ jq --exit-status \
     '.issuer == $issuer
      and (.registration_endpoint | type == "string")
      and (.code_challenge_methods_supported | index("S256") != null)
-     and ((has("scopes_supported") | not) or .scopes_supported == null or .scopes_supported == [])' \
+     and (.scopes_supported | index("openid") != null)
+     and (.scopes_supported | index("offline_access") != null)' \
     "$work/authorization.json" >/dev/null
 
-printf 'Google Calendar MCP OAuth metadata verified (401, RFC 9728, issuer, DCR, PKCE S256, no scopes).\n'
+printf 'Google Calendar MCP OAuth metadata verified (401, RFC 9728, issuer, DCR, PKCE S256, OIDC scopes).\n'
