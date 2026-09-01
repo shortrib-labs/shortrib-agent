@@ -16,8 +16,8 @@ OAuth redirect URI. Local development defaults both values to loopback port
 
 Keycard discovers RFC 9728 protected-resource metadata, issuer
 `https://hrlw48pl49z9x55u3a2kremvhe.keycard.cloud/`, PKCE, and dynamic client
-registration automatically. The agent lets RMCP select the scopes advertised by
-the authorization server, currently including `openid` and `offline_access`.
+registration automatically. The agent intentionally supplies no scopes because
+the server advertises none.
 
 Run `just verify-calendar-metadata` to make a credential-free request and check
 the live resource, issuer, registration endpoint, and PKCE metadata. This check
@@ -46,11 +46,8 @@ refresh tokens are never logged.
 Connections restore lazily: after a restart, the first Calendar request by a
 previously authorized Slack user loads their record, validates the discovered
 issuer through RMCP, reconnects to MCP, and lets Keycard refresh tokens as
-needed. If Keycard rejects restored credentials after its application or
-credential configuration changes, the agent starts a new authorization flow
-that replaces that user's stored grant on completion. Without the two
-persistence variables, credentials remain in memory and every restart requires
-authorization again.
+needed. Without the two persistence variables, credentials remain in memory and
+every restart requires authorization again.
 
 Key rotation is not implemented. Rotate by stopping the agent, deleting the
 credential directory, installing the new key, and asking users to authorize
