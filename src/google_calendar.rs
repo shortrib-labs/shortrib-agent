@@ -343,9 +343,24 @@ fn connect_tool(service: Arc<GoogleCalendarMcp>) -> DynamicTool {
                     )
                 })?;
                 match service.peer_for(&session.user).await {
-                    Ok(Ok(_)) => Ok(ToolOutput::text(
-                        "Google Calendar is already connected for this user.",
-                    )),
+                    Ok(Ok(peer)) => {
+                        service
+                            .register_calendar_tools(&peer)
+                            .await
+                            .map_err(|error| {
+                                tracing::warn!(
+                                    error = %error,
+                                    "Google Calendar tools could not be registered"
+                                );
+                                ToolExecutionError::new(
+                                    ToolErrorKind::Provider,
+                                    "Google Calendar tools could not be loaded",
+                                )
+                            })?;
+                        Ok(ToolOutput::text(
+                            "Google Calendar is connected and its tools are available.",
+                        ))
+                    }
                     Ok(Err(authorization_url)) => {
                         session.request_authorization(authorization_url);
                         Ok(ToolOutput::text(
