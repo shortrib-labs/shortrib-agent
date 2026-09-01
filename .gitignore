@@ -1,2 +1,4 @@
+.env
+/data/oauth/
 /target
 .amp/portals/*

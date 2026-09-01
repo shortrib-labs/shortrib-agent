@@ -4,16 +4,22 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aes-gcm = "0.10.3"
 anyhow = "1.0.104"
 async-trait = "0.1.92"
+base64 = "0.22.1"
+chrono = "0.4.42"
 dotenvy = "0.15.7"
+getrandom = "0.3.4"
 hyper = "1.11.1"
+keycard-rmcp = { git = "https://github.com/crdant/keycard.rs", rev = "0d7aae33e67597b1a2c4c0a51022150cfacf6cc3", default-features = false, features = ["auth", "transport-streamable-http-client-reqwest", "reqwest"] }
 reqwest = { version = "0.13.4", features = ["json"] }
 rig = "0.42.0"
 rustls = "0.23.43"
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+sha2 = "0.10.9"
 slack-morphism = { version = "2.24.0", features = [ "hyper", "rustls-native-certs" ] }
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["full"] }

@@ -5,7 +5,7 @@ use tokio::sync::{Mutex, RwLock};
 
 pub(crate) type ConversationHistory = Arc<Mutex<Vec<Message>>>;
 
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct UserKey {
     team_id: SlackTeamId,
     user_id: SlackUserId,
@@ -14,6 +14,10 @@ pub(crate) struct UserKey {
 impl UserKey {
     pub(crate) fn new(team_id: SlackTeamId, user_id: SlackUserId) -> Self {
         Self { team_id, user_id }
+    }
+
+    pub(crate) fn oauth_storage_identity(&self) -> String {
+        format!("{}\0{}", self.team_id.0, self.user_id.0)
     }
 }
 
