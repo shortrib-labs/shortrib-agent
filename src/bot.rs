@@ -1,7 +1,7 @@
-use slack_morphism::prelude::*;
+use slack_morphism::{errors::SlackClientError, prelude::*};
 use std::sync::Arc;
 
-use crate::agent::Agent;
+use crate::agent::{Agent, ChatResponse};
 use crate::state::{ConversationHistory, ConversationKey, UserKey, UserStateStore};
 
 type BotResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -118,16 +118,20 @@ impl SlackBot {
             let Some(channel_id) = message.origin.channel.clone() else {
                 return Ok(());
             };
+            let user_key = UserKey::new(event.team_id, user_id.clone());
             let conversation = self
                 .users
                 .conversation(
-                    UserKey::new(event.team_id, user_id),
+                    user_key.clone(),
                     ConversationKey::new(channel_id, message.origin.thread_ts.clone()),
                 )
                 .await;
 
             tokio::spawn(async move {
-                if let Err(error) = self.chat(message, client, conversation).await {
+                if let Err(error) = self
+                    .chat(user_key, user_id, message, client, conversation)
+                    .await
+                {
                     eprintln!("Chat error: {error:#}");
                 }
             });
@@ -138,6 +142,8 @@ impl SlackBot {
 
     async fn chat(
         &self,
+        user_key: UserKey,
+        user_id: SlackUserId,
         event: SlackMessageEvent,
         client: Arc<SlackHyperClient>,
         history: ConversationHistory,
@@ -151,17 +157,35 @@ impl SlackBot {
 
         let mut history = history.lock().await;
         let previous_history_len = history.len();
-        let response = self.agent.chat(&message, &mut history).await?;
-        let request = SlackApiChatPostMessageRequest::new(
-            channel,
-            SlackMessageContent::new().with_text(response),
-        );
 
-        if let Err(error) = client
-            .open_session(&self.bot_token)
-            .chat_post_message(&request)
-            .await
-        {
+        let ChatResponse {
+            message: response,
+            authorization_url,
+        } = self.agent.chat(user_key, &message, &mut history).await?;
+        let session = client.open_session(&self.bot_token);
+        let post_result = async {
+            if let Some(authorization_url) = authorization_url {
+                session
+                    .chat_post_ephemeral(&SlackApiChatPostEphemeralRequest::new(
+                        channel.clone(),
+                        user_id,
+                        SlackMessageContent::new().with_text(format!(
+                            "Authorize Google Calendar to continue: {authorization_url}"
+                        )),
+                    ))
+                    .await?;
+            }
+            session
+                .chat_post_message(&SlackApiChatPostMessageRequest::new(
+                    channel,
+                    SlackMessageContent::new().with_text(response),
+                ))
+                .await?;
+            Ok::<_, SlackClientError>(())
+        }
+        .await;
+
+        if let Err(error) = post_result {
             history.truncate(previous_history_len);
             return Err(error.into());
         }

@@ -1,5 +1,6 @@
 mod agent;
 mod bot;
+mod google_calendar;
 mod state;
 
 use agent::Agent;

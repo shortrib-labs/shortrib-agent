@@ -5,7 +5,7 @@ use tokio::sync::{Mutex, RwLock};
 
 pub(crate) type ConversationHistory = Arc<Mutex<Vec<Message>>>;
 
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct UserKey {
     team_id: SlackTeamId,
     user_id: SlackUserId,
