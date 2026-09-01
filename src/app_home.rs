@@ -19,11 +19,12 @@ use slack_morphism::prelude::SlackView;
 use tokio::{
     io::AsyncWriteExt as _,
     net::{TcpListener, TcpStream},
-    sync::{Mutex, broadcast},
+    sync::{Mutex, RwLock, broadcast},
 };
 
 use crate::{
     google_calendar::{http_response, read_request_target},
+    oauth_store::{CredentialVault, KeycardIdentity},
     state::UserKey,
 };
 
@@ -50,15 +51,38 @@ pub(crate) struct CalendarHome {
     redirect_uri: Url,
     callback_bind: SocketAddr,
     pending_authorizations: Arc<Mutex<HashMap<String, PendingAuthorization>>>,
+    identity_vault: Option<CredentialVault>,
+    identities: Arc<RwLock<HashMap<UserKey, KeycardIdentity>>>,
     authorized_users: broadcast::Sender<UserKey>,
 }
 
 struct PendingAuthorization {
     user: UserKey,
-    user_identifier: String,
+    slack_email: String,
     verifier: SecretString,
     authorization_url: Url,
     created_at: Instant,
+}
+
+#[derive(Deserialize)]
+struct KeycardUserInfo {
+    sub: String,
+    email: String,
+}
+
+impl KeycardUserInfo {
+    fn identity_for(self, slack_email: &str) -> anyhow::Result<KeycardIdentity> {
+        if self.sub.is_empty() {
+            bail!("Keycard UserInfo response did not contain a subject");
+        }
+        if self.email != slack_email {
+            bail!("authorized Keycard email did not match Slack identity");
+        }
+        Ok(KeycardIdentity {
+            email: self.email,
+            subject: self.sub,
+        })
+    }
 }
 
 impl CalendarHome {
@@ -95,6 +119,7 @@ impl CalendarHome {
             .basic_auth(client_id, client_secret)
             .build()?;
         let public_keycard = KeycardClient::new(issuer)?;
+        let identity_vault = CredentialVault::from_env()?;
         let (authorized_users, _) = broadcast::channel(32);
         Ok(Self {
             keycard,
@@ -104,6 +129,8 @@ impl CalendarHome {
             redirect_uri,
             callback_bind,
             pending_authorizations: Arc::new(Mutex::new(HashMap::new())),
+            identity_vault,
+            identities: Arc::new(RwLock::new(HashMap::new())),
             authorized_users,
         })
     }
@@ -179,18 +206,20 @@ impl CalendarHome {
     pub(crate) async fn upcoming_events(
         &self,
         user: &UserKey,
-        user_identifier: &str,
+        slack_email: &str,
     ) -> Result<Vec<CalendarEvent>, CalendarError> {
-        let result = self.upcoming_events_authorized(user_identifier).await;
-        self.with_authorization_url(user, user_identifier, result)
-            .await
+        let result = match self.subject_for(user, slack_email).await? {
+            Some(subject) => self.upcoming_events_authorized(&subject).await,
+            None => Err(CalendarError::authorization_required()),
+        };
+        self.with_authorization_url(user, slack_email, result).await
     }
 
     async fn upcoming_events_authorized(
         &self,
-        user_identifier: &str,
+        subject: &str,
     ) -> Result<Vec<CalendarEvent>, CalendarError> {
-        let token = self.token_for(user_identifier).await?;
+        let token = self.token_for(subject).await?;
         let mut page_token: Option<String> = None;
         let mut events = Vec::new();
 
@@ -237,24 +266,24 @@ impl CalendarHome {
     pub(crate) async fn respond(
         &self,
         user: &UserKey,
-        user_identifier: &str,
+        slack_email: &str,
         event_id: &str,
         response: InvitationResponse,
     ) -> Result<(), CalendarError> {
-        let result = self
-            .respond_authorized(user_identifier, event_id, response)
-            .await;
-        self.with_authorization_url(user, user_identifier, result)
-            .await
+        let result = match self.subject_for(user, slack_email).await? {
+            Some(subject) => self.respond_authorized(&subject, event_id, response).await,
+            None => Err(CalendarError::authorization_required()),
+        };
+        self.with_authorization_url(user, slack_email, result).await
     }
 
     async fn respond_authorized(
         &self,
-        user_identifier: &str,
+        subject: &str,
         event_id: &str,
         response: InvitationResponse,
     ) -> Result<(), CalendarError> {
-        let token = self.token_for(user_identifier).await?;
+        let token = self.token_for(subject).await?;
         let mut url = calendar_url(&["calendars", "primary", "events", event_id]);
         url.query_pairs_mut().append_pair("maxAttendees", "1");
         let current_response = self
@@ -352,9 +381,9 @@ impl CalendarHome {
         home_view(blocks)
     }
 
-    async fn token_for(&self, user_identifier: &str) -> Result<SecretString, CalendarError> {
+    async fn token_for(&self, subject: &str) -> Result<SecretString, CalendarError> {
         self.keycard
-            .impersonate(user_identifier, CALENDAR_API_RESOURCE)
+            .impersonate(subject, CALENDAR_API_RESOURCE)
             .scope(CALENDAR_EVENTS_SCOPE)
             .send()
             .await
@@ -365,7 +394,7 @@ impl CalendarHome {
     async fn with_authorization_url<T>(
         &self,
         user: &UserKey,
-        user_identifier: &str,
+        slack_email: &str,
         result: Result<T, CalendarError>,
     ) -> Result<T, CalendarError> {
         match result {
@@ -374,7 +403,7 @@ impl CalendarHome {
                 authorization_url: None,
             }) => {
                 let authorization_url = self
-                    .begin_authorization(user, user_identifier)
+                    .begin_authorization(user, slack_email)
                     .await
                     .map_err(|_| CalendarError::Unavailable)?;
                 Err(CalendarError::Authorization {
@@ -386,17 +415,13 @@ impl CalendarHome {
         }
     }
 
-    async fn begin_authorization(
-        &self,
-        user: &UserKey,
-        user_identifier: &str,
-    ) -> anyhow::Result<Url> {
+    async fn begin_authorization(&self, user: &UserKey, slack_email: &str) -> anyhow::Result<Url> {
         {
             let mut pending = self.pending_authorizations.lock().await;
             pending
                 .retain(|_, authorization| authorization.created_at.elapsed() < AUTHORIZATION_TTL);
             if let Some(authorization) = pending.values().find(|authorization| {
-                &authorization.user == user && authorization.user_identifier == user_identifier
+                &authorization.user == user && authorization.slack_email == slack_email
             }) {
                 return Ok(authorization.authorization_url.clone());
             }
@@ -420,7 +445,7 @@ impl CalendarHome {
         let mut pending = self.pending_authorizations.lock().await;
         pending.retain(|_, authorization| authorization.created_at.elapsed() < AUTHORIZATION_TTL);
         if let Some(authorization) = pending.values().find(|authorization| {
-            &authorization.user == user && authorization.user_identifier == user_identifier
+            &authorization.user == user && authorization.slack_email == slack_email
         }) {
             return Ok(authorization.authorization_url.clone());
         }
@@ -429,7 +454,7 @@ impl CalendarHome {
             state,
             PendingAuthorization {
                 user: user.clone(),
-                user_identifier: user_identifier.to_owned(),
+                slack_email: slack_email.to_owned(),
                 verifier: pkce.verifier,
                 authorization_url: authorization_url.clone(),
                 created_at: Instant::now(),
@@ -527,7 +552,8 @@ impl CalendarHome {
         let code = parameters
             .get("code")
             .ok_or_else(|| anyhow::anyhow!("OAuth callback did not contain a code"))?;
-        self.public_keycard
+        let token = self
+            .public_keycard
             .authorization_code(
                 code,
                 pending.verifier.into_inner(),
@@ -538,13 +564,86 @@ impl CalendarHome {
             .await
             .context("Keycard authorization code exchange failed")?;
 
-        // Prove that consent established usable Calendar delegation for the
-        // Slack-linked identifier. A different Keycard login cannot authorize
-        // or expose Calendar data for this expected identity.
-        self.upcoming_events_authorized(&pending.user_identifier)
+        let user_info = self
+            .keycard_user_info(&token.access_token)
             .await
-            .map_err(|_| anyhow::anyhow!("authorized Keycard user did not match Slack identity"))?;
+            .context("failed to resolve authorized Keycard identity")?;
+        let identity = user_info.identity_for(&pending.slack_email)?;
+        self.save_identity(&pending.user, identity.clone()).await?;
+
+        // Prove that consent established usable Calendar delegation for the
+        // verified Keycard subject before reporting success.
+        self.upcoming_events_authorized(&identity.subject)
+            .await
+            .map_err(|_| anyhow::anyhow!("authorized Keycard user has no usable Calendar grant"))?;
         let _ = self.authorized_users.send(pending.user);
+        Ok(())
+    }
+
+    async fn keycard_user_info(
+        &self,
+        access_token: &SecretString,
+    ) -> anyhow::Result<KeycardUserInfo> {
+        let metadata = self.public_keycard.discover().await?;
+        let endpoint = metadata
+            .extra
+            .get("userinfo_endpoint")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Keycard metadata does not advertise userinfo_endpoint")
+            })?
+            .parse::<Url>()
+            .context("Keycard userinfo_endpoint is not a valid URL")?;
+        if endpoint.scheme() != "https" {
+            bail!("Keycard userinfo_endpoint must use HTTPS");
+        }
+        let response = self
+            .http
+            .get(endpoint)
+            .bearer_auth(access_token.expose_secret())
+            .send()
+            .await
+            .context("Keycard UserInfo request failed")?
+            .error_for_status()
+            .context("Keycard UserInfo request was rejected")?;
+        response
+            .json()
+            .await
+            .context("Keycard UserInfo response was invalid")
+    }
+
+    async fn subject_for(
+        &self,
+        user: &UserKey,
+        slack_email: &str,
+    ) -> Result<Option<String>, CalendarError> {
+        if let Some(identity) = self.identities.read().await.get(user) {
+            return Ok((identity.email == slack_email).then(|| identity.subject.clone()));
+        }
+        let Some(vault) = &self.identity_vault else {
+            return Ok(None);
+        };
+        let identity = vault
+            .identity_store(user)
+            .load()
+            .await
+            .map_err(|_| CalendarError::Unavailable)?;
+        let Some(identity) = identity else {
+            return Ok(None);
+        };
+        if identity.email != slack_email {
+            return Ok(None);
+        }
+        let subject = identity.subject.clone();
+        self.identities.write().await.insert(user.clone(), identity);
+        Ok(Some(subject))
+    }
+
+    async fn save_identity(&self, user: &UserKey, identity: KeycardIdentity) -> anyhow::Result<()> {
+        if let Some(vault) = &self.identity_vault {
+            vault.identity_store(user).save(&identity).await?;
+        }
+        self.identities.write().await.insert(user.clone(), identity);
         Ok(())
     }
 
@@ -599,12 +698,16 @@ pub(crate) enum CalendarError {
 }
 
 impl CalendarError {
+    fn authorization_required() -> Self {
+        Self::Authorization {
+            message: "Authorize Google Calendar for this Slack account, then return to Slack.",
+            authorization_url: None,
+        }
+    }
+
     fn from_keycard(error: KeycardError) -> Self {
         match error.as_oauth().map(|error| error.code.as_str()) {
-            Some("interaction_required" | "invalid_grant") => Self::Authorization {
-                message: "Authorize Google Calendar for this Slack account, then return to Slack.",
-                authorization_url: None,
-            },
+            Some("interaction_required" | "invalid_grant") => Self::authorization_required(),
             Some("access_denied") => Self::Authorization {
                 message: "Calendar access is not allowed for this account. Reauthorize or ask your Keycard administrator to enable the Calendar dependency and impersonation policy.",
                 authorization_url: None,
@@ -1234,6 +1337,27 @@ mod tests {
         assert!(with_url.contains("https://issuer.example/authorize"));
     }
 
+    #[test]
+    fn userinfo_subject_is_bound_to_the_expected_slack_email() {
+        let identity = KeycardUserInfo {
+            sub: "keycard-subject".to_owned(),
+            email: "user@example.com".to_owned(),
+        }
+        .identity_for("user@example.com")
+        .unwrap();
+        assert_eq!(identity.subject, "keycard-subject");
+        assert_eq!(identity.email, "user@example.com");
+
+        assert!(
+            KeycardUserInfo {
+                sub: "other-subject".to_owned(),
+                email: "other@example.com".to_owned(),
+            }
+            .identity_for("user@example.com")
+            .is_err()
+        );
+    }
+
     fn home_view_for_test(events: &[CalendarEvent]) -> SlackView {
         calendar_home_for_test().events_view(&user(), events)
     }
@@ -1249,6 +1373,8 @@ mod tests {
             redirect_uri: Url::parse("https://example.com/calendar/callback").unwrap(),
             callback_bind: DEFAULT_CALLBACK_BIND.parse().unwrap(),
             pending_authorizations: Arc::new(Mutex::new(HashMap::new())),
+            identity_vault: None,
+            identities: Arc::new(RwLock::new(HashMap::new())),
             authorized_users,
         }
     }

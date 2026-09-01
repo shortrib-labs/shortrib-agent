@@ -325,8 +325,8 @@ impl SlackBot {
             &client,
         )
         .await?;
-        let result = match self.slack_user_identifier(&user, &client).await {
-            Ok(identifier) => self.calendar_home.upcoming_events(&user, &identifier).await,
+        let result = match self.slack_user_email(&user, &client).await {
+            Ok(email) => self.calendar_home.upcoming_events(&user, &email).await,
             Err(error) => Err(error),
         };
         if !self.is_current_home_revision(&user, revision).await {
@@ -354,8 +354,8 @@ impl SlackBot {
             &client,
         )
         .await?;
-        let identifier = match self.slack_user_identifier(&user, &client).await {
-            Ok(identifier) => identifier,
+        let slack_email = match self.slack_user_email(&user, &client).await {
+            Ok(email) => email,
             Err(error) => {
                 if self.is_current_home_revision(&user, revision).await {
                     self.publish_home(
@@ -371,7 +371,7 @@ impl SlackBot {
 
         let response_result = self
             .calendar_home
-            .respond(&user, &identifier, &event_id, response)
+            .respond(&user, &slack_email, &event_id, response)
             .await;
         if let Err(error) = response_result
             && !matches!(error, CalendarError::Stale | CalendarError::NotActionable)
@@ -387,7 +387,10 @@ impl SlackBot {
             return Ok(());
         }
 
-        let events = self.calendar_home.upcoming_events(&user, &identifier).await;
+        let events = self
+            .calendar_home
+            .upcoming_events(&user, &slack_email)
+            .await;
         if !self.is_current_home_revision(&user, revision).await {
             return Ok(());
         }
@@ -399,7 +402,7 @@ impl SlackBot {
             .await
     }
 
-    async fn slack_user_identifier(
+    async fn slack_user_email(
         &self,
         user: &UserKey,
         client: &SlackHyperClient,

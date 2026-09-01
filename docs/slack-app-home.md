@@ -6,6 +6,7 @@ The App Home path is intentionally independent of the LLM and Calendar MCP:
 authenticated Slack event
   -> verify bot-token team and Slack user
   -> users.info (workspace email)
+  -> encrypted Slack user -> verified Keycard subject mapping
   -> Keycard substitute-user token exchange
   -> Google Calendar API v3
   -> deterministic Slack Block Kit view
@@ -15,8 +16,9 @@ The existing encrypted RMCP `StoredCredentials` remain the source of truth for
 Calendar MCP chat sessions only. They are resource-bound to the MCP gateway;
 they cannot mint a Google Calendar audience token and must not be sent to
 Google. The App Home instead uses the pinned `keycard` Rust SDK's
-`Client::impersonate(email, "https://www.googleapis.com/calendar/v3")` flow.
-It requests the narrow read/write event scope
+`Client::impersonate(subject, "https://www.googleapis.com/calendar/v3")` flow.
+The subject is the Keycard UserInfo `sub`, not the user's email or Keycard
+record UID. It requests the narrow read/write event scope
 `https://www.googleapis.com/auth/calendar.events` and discards every returned
 provider token after that App Home operation.
 
@@ -36,11 +38,12 @@ interaction has the same team and user. App Home views are private to the user,
 and only Slack can deliver a Socket Mode interaction. Duplicate action
 timestamps are ignored for ten minutes to absorb Slack retries.
 
-The Keycard user identifier is the email returned by Slack `users.info`. Treat
-the workspace's email ownership controls as the verified Slack-to-Keycard
-identity link, and ensure each Keycard user has that exact identifier. Do not
-replace this lookup with an action value, request parameter, or unverified
-profile field.
+The email returned by Slack `users.info` starts the identity-link flow. After
+the user authenticates, the agent calls Keycard UserInfo and accepts the link
+only when its verified email exactly matches the Slack email. It then binds the
+Slack team/user to UserInfo's opaque `sub`, which is the identifier supplied to
+subsequent impersonation exchanges. Do not replace either side with an action
+value, request parameter, or unverified profile field.
 
 ## Keycard and Google configuration
 
@@ -75,26 +78,37 @@ provider tokens. The redirect URI must be HTTPS in production (loopback HTTP is
 accepted for local development), must exactly match the public Keycard
 application registration, and must route to the private callback bind. Existing
 MCP consent may not establish delegation for this distinct confidential
-application. `interaction_required`, an unknown/revoked user grant, Google
-401/403, and missing scope all start the in-process authorization flow rather
-than exposing provider details.
+application. A missing Slack-to-Keycard subject mapping,
+`interaction_required`, an unknown/revoked user grant, Google 401/403, and
+missing scope all start the in-process authorization flow rather than exposing
+provider details.
 
 ## In-process authorization
 
-When Keycard reports that the Slack-linked user has no usable Calendar grant,
-the agent generates a 128-character PKCE verifier, S256 challenge, and random
-32-byte state. It stores the verifier, expected Slack team/user/email, and
-authorization URL in memory for ten minutes, then puts the Keycard authorization
-URL directly on the private App Home.
+When the Slack user has no verified Keycard subject mapping, or Keycard reports
+that the mapped user has no usable Calendar grant, the agent generates a
+128-character PKCE verifier, S256 challenge, and random 32-byte state. It stores
+the verifier, expected Slack team/user/email, and authorization URL in memory
+for ten minutes, then puts the Keycard authorization URL directly on the private
+App Home.
 
 Keycard redirects the browser to `KEYCARD_CALENDAR_REDIRECT_URI`. The callback
 listener accepts only that configured path, atomically consumes state, exchanges
-the code with `KEYCARD_CALENDAR_PUBLIC_CLIENT_ID`, and discards the returned
-tokens. It then proves the authorized account established delegation for the
-expected Slack email by performing a confidential impersonation exchange and a
-Calendar list request. A different Keycard login therefore cannot authorize or
-expose data for the expected identity. On success, the process automatically
-republishes that user's App Home.
+the code with `KEYCARD_CALENDAR_PUBLIC_CLIENT_ID`, and uses the short-lived
+access token only to call Keycard UserInfo. The callback rejects a UserInfo
+email that does not exactly match the expected Slack email. It stores the
+resulting `sub` against the Slack team/user, discards the token, then proves the
+account has a usable Calendar delegation by performing a confidential
+impersonation exchange and Calendar list request. A different Keycard login
+therefore cannot authorize or expose data for the expected identity. On
+success, the process automatically republishes that user's App Home.
+
+When `GOOGLE_CALENDAR_OAUTH_STORAGE_DIR` and
+`GOOGLE_CALENDAR_OAUTH_ENCRYPTION_KEY` are configured, the mapping is encrypted,
+integrity-protected, and bound to the Slack team/user alongside the MCP OAuth
+records. Without persistence, mappings remain in memory and each user must link
+again after a process restart. A changed Slack email invalidates the old mapping
+and requires a new link.
 
 Pending PKCE state is intentionally in memory, matching the existing
 single-replica OAuth constraint. A restart invalidates an unfinished attempt;

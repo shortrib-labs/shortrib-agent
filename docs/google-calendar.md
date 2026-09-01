@@ -37,11 +37,12 @@ storage directory from a durable private volume. Keep the same key across
 restarts. Losing it makes existing credentials undecryptable; exposing it
 exposes every stored Calendar grant.
 
-The agent serializes RMCP `StoredCredentials`, encrypts each record with
-AES-256-GCM, binds the ciphertext to the Slack team/user identity as associated
-data, hashes that identity for the filename, and writes through an atomic
-rename. Unix directory and file modes are set to `0700` and `0600`. Access and
-refresh tokens are never logged.
+The agent serializes RMCP `StoredCredentials` and the App Home's verified
+Slack-to-Keycard subject mapping into separate records, encrypts each record
+with AES-256-GCM, binds the ciphertext to the Slack team/user identity and
+record purpose as associated data, hashes that identity for the filename, and
+writes through an atomic rename. Unix directory and file modes are set to
+`0700` and `0600`. Access and refresh tokens are never logged.
 
 Connections restore lazily: after a restart, the first Calendar request by a
 previously authorized Slack user loads their record, validates the discovered

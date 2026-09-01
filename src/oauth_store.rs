@@ -10,6 +10,7 @@ use aes_gcm::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use keycard_rmcp::rmcp::transport::auth::{AuthError, CredentialStore, StoredCredentials};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{io::AsyncWriteExt as _, sync::Mutex};
 
@@ -19,7 +20,14 @@ const STORAGE_DIR_ENV: &str = "GOOGLE_CALENDAR_OAUTH_STORAGE_DIR";
 const ENCRYPTION_KEY_ENV: &str = "GOOGLE_CALENDAR_OAUTH_ENCRYPTION_KEY";
 const FORMAT_VERSION: u8 = 1;
 const NONCE_LEN: usize = 12;
-const AAD_PREFIX: &str = "shortrib-agent/google-calendar/credentials/v1";
+const CREDENTIAL_AAD_PREFIX: &str = "shortrib-agent/google-calendar/credentials/v1";
+const IDENTITY_AAD_PREFIX: &str = "shortrib-agent/google-calendar/keycard-identity/v1";
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct KeycardIdentity {
+    pub(crate) email: String,
+    pub(crate) subject: String,
+}
 
 #[derive(Clone)]
 pub(crate) struct CredentialVault {
@@ -61,6 +69,39 @@ impl CredentialVault {
             user.oauth_storage_identity(),
         )
     }
+
+    pub(crate) fn identity_store(&self, user: &UserKey) -> KeycardIdentityStore {
+        KeycardIdentityStore {
+            encrypted: EncryptedCredentialStore::new_with_purpose(
+                self.root.as_ref().clone(),
+                *self.key,
+                user.oauth_storage_identity(),
+                "identity",
+                IDENTITY_AAD_PREFIX,
+            ),
+        }
+    }
+}
+
+pub(crate) struct KeycardIdentityStore {
+    encrypted: EncryptedCredentialStore,
+}
+
+impl KeycardIdentityStore {
+    pub(crate) async fn load(&self) -> Result<Option<KeycardIdentity>, AuthError> {
+        let Some(plaintext) = self.encrypted.load_bytes().await? else {
+            return Ok(None);
+        };
+        serde_json::from_slice(&plaintext)
+            .map(Some)
+            .map_err(|_| storage_error("Keycard identity file contains invalid data"))
+    }
+
+    pub(crate) async fn save(&self, identity: &KeycardIdentity) -> Result<(), AuthError> {
+        let plaintext = serde_json::to_vec(identity)
+            .map_err(|_| storage_error("could not serialize Keycard identity"))?;
+        self.encrypted.save_bytes(&plaintext).await
+    }
 }
 
 #[derive(Clone)]
@@ -73,12 +114,22 @@ pub(crate) struct EncryptedCredentialStore {
 
 impl EncryptedCredentialStore {
     fn new(root: PathBuf, key: [u8; 32], identity: String) -> Self {
+        Self::new_with_purpose(root, key, identity, "credentials", CREDENTIAL_AAD_PREFIX)
+    }
+
+    fn new_with_purpose(
+        root: PathBuf,
+        key: [u8; 32],
+        identity: String,
+        extension: &str,
+        aad_prefix: &str,
+    ) -> Self {
         let digest = Sha256::digest(identity.as_bytes());
-        let filename = format!("{}.credentials", hex(&digest));
+        let filename = format!("{}.{extension}", hex(&digest));
         Self {
             path: Arc::new(root.join(filename)),
             key: Arc::new(key),
-            associated_data: Arc::new(format!("{AAD_PREFIX}\0{identity}").into_bytes()),
+            associated_data: Arc::new(format!("{aad_prefix}\0{identity}").into_bytes()),
             lock: Arc::new(Mutex::new(())),
         }
     }
@@ -157,29 +208,39 @@ impl EncryptedCredentialStore {
         }
         Ok(())
     }
+
+    async fn load_bytes(&self) -> Result<Option<Vec<u8>>, AuthError> {
+        let _guard = self.lock.lock().await;
+        let encrypted = match tokio::fs::read(self.path.as_ref()).await {
+            Ok(encrypted) => encrypted,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(io_error("read encrypted record", error)),
+        };
+        self.open(&encrypted).map(Some)
+    }
+
+    async fn save_bytes(&self, plaintext: &[u8]) -> Result<(), AuthError> {
+        let _guard = self.lock.lock().await;
+        let encrypted = self.seal(plaintext)?;
+        self.write_atomically(&encrypted).await
+    }
 }
 
 #[async_trait::async_trait]
 impl CredentialStore for EncryptedCredentialStore {
     async fn load(&self) -> Result<Option<StoredCredentials>, AuthError> {
-        let _guard = self.lock.lock().await;
-        let encrypted = match tokio::fs::read(self.path.as_ref()).await {
-            Ok(encrypted) => encrypted,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(io_error("read OAuth credentials", error)),
+        let Some(plaintext) = self.load_bytes().await? else {
+            return Ok(None);
         };
-        let plaintext = self.open(&encrypted)?;
         serde_json::from_slice(&plaintext)
             .map(Some)
             .map_err(|_| storage_error("OAuth credential file contains invalid data"))
     }
 
     async fn save(&self, credentials: StoredCredentials) -> Result<(), AuthError> {
-        let _guard = self.lock.lock().await;
         let plaintext = serde_json::to_vec(&credentials)
             .map_err(|_| storage_error("could not serialize OAuth credentials"))?;
-        let encrypted = self.seal(&plaintext)?;
-        self.write_atomically(&encrypted).await
+        self.save_bytes(&plaintext).await
     }
 
     async fn clear(&self) -> Result<(), AuthError> {
@@ -293,6 +354,41 @@ mod tests {
         }
 
         store.clear().await.unwrap();
+        tokio::fs::remove_dir(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn keycard_identity_round_trips_in_a_separate_encrypted_record() {
+        let mut suffix = [0_u8; 8];
+        getrandom::fill(&mut suffix).unwrap();
+        let root = std::env::temp_dir().join(format!("shortrib-identity-test-{}", hex(&suffix)));
+        let encrypted = EncryptedCredentialStore::new_with_purpose(
+            root.clone(),
+            [13; 32],
+            "team\0user".to_owned(),
+            "identity",
+            IDENTITY_AAD_PREFIX,
+        );
+        let store = KeycardIdentityStore { encrypted };
+        let identity = KeycardIdentity {
+            email: "user@example.com".to_owned(),
+            subject: "keycard-subject".to_owned(),
+        };
+
+        store.save(&identity).await.unwrap();
+        let contents = tokio::fs::read(store.encrypted.path.as_ref())
+            .await
+            .unwrap();
+        assert!(
+            !contents
+                .windows(identity.email.len())
+                .any(|window| window == identity.email.as_bytes())
+        );
+        assert_eq!(store.load().await.unwrap(), Some(identity));
+
+        tokio::fs::remove_file(store.encrypted.path.as_ref())
+            .await
+            .unwrap();
         tokio::fs::remove_dir(root).await.unwrap();
     }
 }
