@@ -2,6 +2,7 @@ use slack_morphism::{errors::SlackClientError, prelude::*};
 use std::sync::Arc;
 
 use crate::agent::{Agent, ChatResponse};
+use crate::calendar_blocks::calendar_message;
 use crate::state::{ConversationHistory, ConversationKey, UserKey, UserStateStore};
 
 type BotResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -161,6 +162,7 @@ impl SlackBot {
         let ChatResponse {
             message: response,
             authorization_url,
+            calendar_outputs,
         } = self.agent.chat(user_key, &message, &mut history).await?;
         let session = client.open_session(&self.bot_token);
         let post_result = async {
@@ -178,7 +180,7 @@ impl SlackBot {
             session
                 .chat_post_message(&SlackApiChatPostMessageRequest::new(
                     channel,
-                    SlackMessageContent::new().with_text(response),
+                    calendar_message(response, &calendar_outputs),
                 ))
                 .await?;
             Ok::<_, SlackClientError>(())

@@ -8,7 +8,7 @@ use rig::{
 };
 
 use crate::{
-    google_calendar::{CONNECT_TOOL, CalendarSession, GoogleCalendarMcp},
+    google_calendar::{CONNECT_TOOL, CalendarSession, CalendarToolOutput, GoogleCalendarMcp},
     state::UserKey,
 };
 
@@ -25,6 +25,9 @@ pub struct ChatResponse {
     /// A Google Calendar authorization link the user must open before their
     /// calendar tools work. Sent to the user privately.
     pub authorization_url: Option<String>,
+    /// Structured Calendar MCP results for deterministic presentation by the
+    /// Slack adapter.
+    pub calendar_outputs: Vec<CalendarToolOutput>,
 }
 
 impl Agent {
@@ -70,6 +73,7 @@ impl Agent {
         Ok(ChatResponse {
             message: response.output,
             authorization_url: session.authorization_url(),
+            calendar_outputs: session.tool_outputs(),
         })
     }
 }

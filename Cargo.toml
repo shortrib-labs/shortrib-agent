@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.92"
+chrono = "0.4.42"
 dotenvy = "0.15.7"
 hyper = "1.11.1"
 keycard-rmcp = { git = "https://github.com/crdant/keycard.rs", rev = "0d7aae33e67597b1a2c4c0a51022150cfacf6cc3", default-features = false, features = ["auth", "transport-streamable-http-client-reqwest", "reqwest"] }
