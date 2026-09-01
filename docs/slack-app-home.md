@@ -54,9 +54,10 @@ Absent Users** guide:
 - A confidential shortrib-agent application with the Calendar resource as a
   dependency and implicit consent. Generate its client ID and secret (or adapt
   the code to a supported workload credential before production).
-- A public landing-page application with the Calendar resource as a dependency
-  and an authorization-code-with-PKCE flow. Its `/authorize` entry point is the
-  App Home reauthorization URL. A user visits it once to establish delegation.
+- A public application with the Calendar resource as a dependency and the
+  App Home callback URI registered as an allowed redirect. The same
+  shortrib-agent process runs its authorization-code-with-PKCE flow; no separate
+  landing-page service is required.
 
 Configure:
 
@@ -64,15 +65,41 @@ Configure:
 KEYCARD_ISSUER=https://YOUR_ZONE.keycard.cloud
 KEYCARD_CLIENT_ID=...
 KEYCARD_CLIENT_SECRET=...
-KEYCARD_CALENDAR_AUTHORIZATION_URL=https://calendar-auth.example.com/authorize
+KEYCARD_CALENDAR_PUBLIC_CLIENT_ID=...
+KEYCARD_CALENDAR_REDIRECT_URI=https://agent.example.com/calendar/callback
+KEYCARD_CALENDAR_CALLBACK_BIND=0.0.0.0:3001
 ```
 
 Keep the secret in the deployment secret manager. The app never logs it or
-provider tokens. The authorization URL must be HTTPS. Existing MCP consent may
-not establish delegation for this distinct confidential application; complete
-the landing-page consent for every App Home user. `interaction_required`, an
-unknown/revoked user grant, Google 401/403, and missing scope all render a
-reauthorization state rather than exposing provider details.
+provider tokens. The redirect URI must be HTTPS in production (loopback HTTP is
+accepted for local development), must exactly match the public Keycard
+application registration, and must route to the private callback bind. Existing
+MCP consent may not establish delegation for this distinct confidential
+application. `interaction_required`, an unknown/revoked user grant, Google
+401/403, and missing scope all start the in-process authorization flow rather
+than exposing provider details.
+
+## In-process authorization
+
+When Keycard reports that the Slack-linked user has no usable Calendar grant,
+the agent generates a 128-character PKCE verifier, S256 challenge, and random
+32-byte state. It stores the verifier, expected Slack team/user/email, and
+authorization URL in memory for ten minutes, then puts the Keycard authorization
+URL directly on the private App Home.
+
+Keycard redirects the browser to `KEYCARD_CALENDAR_REDIRECT_URI`. The callback
+listener accepts only that configured path, atomically consumes state, exchanges
+the code with `KEYCARD_CALENDAR_PUBLIC_CLIENT_ID`, and discards the returned
+tokens. It then proves the authorized account established delegation for the
+expected Slack email by performing a confidential impersonation exchange and a
+Calendar list request. A different Keycard login therefore cannot authorize or
+expose data for the expected identity. On success, the process automatically
+republishes that user's App Home.
+
+Pending PKCE state is intentionally in memory, matching the existing
+single-replica OAuth constraint. A restart invalidates an unfinished attempt;
+reopening Home creates a new one. Never put callback query strings in logs or
+tickets because they contain short-lived codes and state.
 
 ## Event and action semantics
 
@@ -165,8 +192,9 @@ CI cannot prove Keycard policy, one-time Google consent, Slack app settings, or
 live Calendar writes. In a test workspace/account:
 
 1. Open Home before consent and verify the authorization state/link.
-2. Authorize through the landing page and reopen Home. Compare ordering, timed
-   and all-day display, links, organizer, location, and statuses with Google.
+2. Authorize through the in-process PKCE flow and verify Home refreshes
+   automatically. Compare ordering, timed and all-day display, links, organizer,
+   location, and statuses with Google.
 3. Test accept, maybe, and decline on disposable invitations. Confirm only the
    signed-in attendee changes and the Home refreshes.
 4. Repeat with a second Slack/Keycard user and verify no event or action crosses

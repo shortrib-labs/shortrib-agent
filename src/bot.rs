@@ -42,7 +42,28 @@ impl SlackBot {
         let client = Arc::new(SlackClient::new(SlackClientHyperConnector::new()?));
         let auth = client.open_session(&self.bot_token).auth_test().await?;
         self.authorized_team = Some(auth.team_id);
+        let mut authorized_users = self.calendar_home.subscribe_authorized_users();
+        self.calendar_home.start().await?;
         let bot = Arc::new(self);
+        let refresh_bot = Arc::clone(&bot);
+        let refresh_client = Arc::clone(&client);
+        tokio::spawn(async move {
+            loop {
+                match authorized_users.recv().await {
+                    Ok(user) => {
+                        let revision = refresh_bot.next_home_revision(&user).await;
+                        if let Err(error) = refresh_bot
+                            .refresh_home(user, revision, Arc::clone(&refresh_client))
+                            .await
+                        {
+                            tracing::warn!(error = %error, "post-authorization App Home refresh failed");
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
 
         let socket_mode_callbacks = SlackSocketModeListenerCallbacks::new()
             .with_command_events(Self::command_callback)
@@ -305,7 +326,7 @@ impl SlackBot {
         )
         .await?;
         let result = match self.slack_user_identifier(&user, &client).await {
-            Ok(identifier) => self.calendar_home.upcoming_events(&identifier).await,
+            Ok(identifier) => self.calendar_home.upcoming_events(&user, &identifier).await,
             Err(error) => Err(error),
         };
         if !self.is_current_home_revision(&user, revision).await {
@@ -350,7 +371,7 @@ impl SlackBot {
 
         let response_result = self
             .calendar_home
-            .respond(&identifier, &event_id, response)
+            .respond(&user, &identifier, &event_id, response)
             .await;
         if let Err(error) = response_result
             && !matches!(error, CalendarError::Stale | CalendarError::NotActionable)
@@ -366,7 +387,7 @@ impl SlackBot {
             return Ok(());
         }
 
-        let events = self.calendar_home.upcoming_events(&identifier).await;
+        let events = self.calendar_home.upcoming_events(&user, &identifier).await;
         if !self.is_current_home_revision(&user, revision).await {
             return Ok(());
         }
@@ -387,9 +408,10 @@ impl SlackBot {
             .open_session(&self.bot_token)
             .users_info(&SlackApiUsersInfoRequest::new(user.user_id().clone()))
             .await
-            .map_err(|_| CalendarError::Authorization(
-                "I couldn’t verify your Slack email. Ask an administrator to grant the bot users:read and users:read.email, then reinstall it.",
-            ))?;
+            .map_err(|_| CalendarError::Authorization {
+                message: "I couldn’t verify your Slack email. Ask an administrator to grant the bot users:read and users:read.email, then reinstall it.",
+                authorization_url: None,
+            })?;
         if response.user.id != *user.user_id()
             || response
                 .user
@@ -397,18 +419,20 @@ impl SlackBot {
                 .as_ref()
                 .is_some_and(|team| team != user.team_id())
         {
-            return Err(CalendarError::Authorization(
-                "Your Slack identity could not be verified for this workspace.",
-            ));
+            return Err(CalendarError::Authorization {
+                message: "Your Slack identity could not be verified for this workspace.",
+                authorization_url: None,
+            });
         }
         response
             .user
             .profile
             .and_then(|profile| profile.email)
             .map(|email| email.0)
-            .ok_or(CalendarError::Authorization(
-                "Your Slack profile needs a verified email linked to the same Keycard user before Calendar can be shown.",
-            ))
+            .ok_or(CalendarError::Authorization {
+                message: "Your Slack profile needs a verified email linked to the same Keycard user before Calendar can be shown.",
+                authorization_url: None,
+            })
     }
 
     async fn publish_home(

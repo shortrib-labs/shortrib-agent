@@ -1,20 +1,41 @@
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
+use anyhow::{Context as _, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, NaiveDate, Utc};
-use keycard::{Client as KeycardClient, Error as KeycardError, SecretString};
+use keycard::{
+    AuthorizeRequest, Client as KeycardClient, Error as KeycardError, SecretString, authorize_url,
+    generate_pkce,
+};
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use slack_morphism::prelude::SlackView;
+use tokio::{
+    io::AsyncWriteExt as _,
+    net::{TcpListener, TcpStream},
+    sync::{Mutex, broadcast},
+};
 
-use crate::state::UserKey;
+use crate::{
+    google_calendar::{http_response, read_request_target},
+    state::UserKey,
+};
 
 const CALENDAR_API_RESOURCE: &str = "https://www.googleapis.com/calendar/v3";
 const CALENDAR_EVENTS_SCOPE: &str = "https://www.googleapis.com/auth/calendar.events";
 const PAGE_SIZE: u8 = 20;
 const MAX_PAGES: usize = 5;
 const EVENT_LIMIT: usize = 5;
+const AUTHORIZATION_TTL: Duration = Duration::from_secs(600);
+const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
+const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:3001/calendar/callback";
+const DEFAULT_CALLBACK_BIND: &str = "127.0.0.1:3001";
 
 pub(crate) const ACCEPT_ACTION: &str = "calendar_rsvp_accept";
 pub(crate) const TENTATIVE_ACTION: &str = "calendar_rsvp_tentative";
@@ -23,8 +44,21 @@ pub(crate) const DECLINE_ACTION: &str = "calendar_rsvp_decline";
 #[derive(Clone)]
 pub(crate) struct CalendarHome {
     keycard: KeycardClient,
+    public_keycard: KeycardClient,
     http: reqwest::Client,
-    reauthorization_url: Url,
+    public_client_id: String,
+    redirect_uri: Url,
+    callback_bind: SocketAddr,
+    pending_authorizations: Arc<Mutex<HashMap<String, PendingAuthorization>>>,
+    authorized_users: broadcast::Sender<UserKey>,
+}
+
+struct PendingAuthorization {
+    user: UserKey,
+    user_identifier: String,
+    verifier: SecretString,
+    authorization_url: Url,
+    created_at: Instant,
 }
 
 impl CalendarHome {
@@ -32,25 +66,63 @@ impl CalendarHome {
         let issuer = required_env("KEYCARD_ISSUER")?;
         let client_id = required_env("KEYCARD_CLIENT_ID")?;
         let client_secret = required_env("KEYCARD_CLIENT_SECRET")?;
-        let reauthorization_url = required_env("KEYCARD_CALENDAR_AUTHORIZATION_URL")?
+        let public_client_id = required_env("KEYCARD_CALENDAR_PUBLIC_CLIENT_ID")?;
+        let redirect_uri = std::env::var("KEYCARD_CALENDAR_REDIRECT_URI")
+            .unwrap_or_else(|_| DEFAULT_REDIRECT_URI.to_owned())
             .parse::<Url>()
-            .map_err(|_| anyhow::anyhow!("KEYCARD_CALENDAR_AUTHORIZATION_URL must be a URL"))?;
-        if reauthorization_url.scheme() != "https" {
-            anyhow::bail!("KEYCARD_CALENDAR_AUTHORIZATION_URL must use HTTPS");
+            .context("KEYCARD_CALENDAR_REDIRECT_URI must be an absolute URL")?;
+        let secure_redirect = redirect_uri.scheme() == "https"
+            || (redirect_uri.scheme() == "http"
+                && matches!(
+                    redirect_uri.host_str(),
+                    Some("127.0.0.1" | "localhost" | "::1")
+                ));
+        if !secure_redirect || redirect_uri.query().is_some() || redirect_uri.fragment().is_some() {
+            bail!(
+                "KEYCARD_CALENDAR_REDIRECT_URI must be HTTPS (or loopback HTTP) without a query or fragment"
+            );
         }
+        let callback_bind = std::env::var("KEYCARD_CALENDAR_CALLBACK_BIND")
+            .unwrap_or_else(|_| DEFAULT_CALLBACK_BIND.to_owned())
+            .parse::<SocketAddr>()
+            .context("KEYCARD_CALENDAR_CALLBACK_BIND must be an IP socket address")?;
 
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .user_agent("shortrib-agent/0.1")
             .build()?;
-        let keycard = KeycardClient::builder(issuer)
+        let keycard = KeycardClient::builder(issuer.clone())
             .basic_auth(client_id, client_secret)
             .build()?;
+        let public_keycard = KeycardClient::new(issuer)?;
+        let (authorized_users, _) = broadcast::channel(32);
         Ok(Self {
             keycard,
+            public_keycard,
             http,
-            reauthorization_url,
+            public_client_id,
+            redirect_uri,
+            callback_bind,
+            pending_authorizations: Arc::new(Mutex::new(HashMap::new())),
+            authorized_users,
         })
+    }
+
+    pub(crate) async fn start(&self) -> anyhow::Result<()> {
+        let listener = TcpListener::bind(self.callback_bind)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to bind Calendar App Home OAuth callback listener at {}",
+                    self.callback_bind
+                )
+            })?;
+        tokio::spawn(self.clone().serve_callbacks(listener));
+        Ok(())
+    }
+
+    pub(crate) fn subscribe_authorized_users(&self) -> broadcast::Receiver<UserKey> {
+        self.authorized_users.subscribe()
     }
 
     pub(crate) fn loading_view(&self) -> SlackView {
@@ -71,10 +143,15 @@ impl CalendarHome {
 
     pub(crate) fn error_view(&self, error: &CalendarError) -> SlackView {
         match error {
-            CalendarError::Authorization(message) => state_view(
+            CalendarError::Authorization {
+                message,
+                authorization_url,
+            } => state_view(
                 ":calendar: Connect Google Calendar",
                 message,
-                Some((&self.reauthorization_url, "Authorize Calendar")),
+                authorization_url
+                    .as_ref()
+                    .map(|url| (url, "Authorize Calendar")),
             ),
             CalendarError::RateLimited => state_view(
                 ":calendar: Calendar is busy",
@@ -100,6 +177,16 @@ impl CalendarHome {
     }
 
     pub(crate) async fn upcoming_events(
+        &self,
+        user: &UserKey,
+        user_identifier: &str,
+    ) -> Result<Vec<CalendarEvent>, CalendarError> {
+        let result = self.upcoming_events_authorized(user_identifier).await;
+        self.with_authorization_url(user, user_identifier, result)
+            .await
+    }
+
+    async fn upcoming_events_authorized(
         &self,
         user_identifier: &str,
     ) -> Result<Vec<CalendarEvent>, CalendarError> {
@@ -148,6 +235,20 @@ impl CalendarHome {
     }
 
     pub(crate) async fn respond(
+        &self,
+        user: &UserKey,
+        user_identifier: &str,
+        event_id: &str,
+        response: InvitationResponse,
+    ) -> Result<(), CalendarError> {
+        let result = self
+            .respond_authorized(user_identifier, event_id, response)
+            .await;
+        self.with_authorization_url(user, user_identifier, result)
+            .await
+    }
+
+    async fn respond_authorized(
         &self,
         user_identifier: &str,
         event_id: &str,
@@ -261,6 +362,192 @@ impl CalendarHome {
             .map_err(CalendarError::from_keycard)
     }
 
+    async fn with_authorization_url<T>(
+        &self,
+        user: &UserKey,
+        user_identifier: &str,
+        result: Result<T, CalendarError>,
+    ) -> Result<T, CalendarError> {
+        match result {
+            Err(CalendarError::Authorization {
+                message,
+                authorization_url: None,
+            }) => {
+                let authorization_url = self
+                    .begin_authorization(user, user_identifier)
+                    .await
+                    .map_err(|_| CalendarError::Unavailable)?;
+                Err(CalendarError::Authorization {
+                    message,
+                    authorization_url: Some(authorization_url),
+                })
+            }
+            other => other,
+        }
+    }
+
+    async fn begin_authorization(
+        &self,
+        user: &UserKey,
+        user_identifier: &str,
+    ) -> anyhow::Result<Url> {
+        {
+            let mut pending = self.pending_authorizations.lock().await;
+            pending
+                .retain(|_, authorization| authorization.created_at.elapsed() < AUTHORIZATION_TTL);
+            if let Some(authorization) = pending.values().find(|authorization| {
+                &authorization.user == user && authorization.user_identifier == user_identifier
+            }) {
+                return Ok(authorization.authorization_url.clone());
+            }
+        }
+
+        let pkce = generate_pkce();
+        let state = random_state()?;
+        let endpoint = self
+            .public_keycard
+            .authorization_endpoint()
+            .await
+            .context("failed to discover Keycard authorization endpoint")?;
+        let request = AuthorizeRequest::new(
+            self.public_client_id.clone(),
+            self.redirect_uri.clone(),
+            pkce.challenge,
+        )
+        .scopes(["openid", "email"])
+        .state(state.clone());
+        let authorization_url = authorize_url(&endpoint, &request);
+        let mut pending = self.pending_authorizations.lock().await;
+        pending.retain(|_, authorization| authorization.created_at.elapsed() < AUTHORIZATION_TTL);
+        if let Some(authorization) = pending.values().find(|authorization| {
+            &authorization.user == user && authorization.user_identifier == user_identifier
+        }) {
+            return Ok(authorization.authorization_url.clone());
+        }
+        pending.retain(|_, authorization| &authorization.user != user);
+        pending.insert(
+            state,
+            PendingAuthorization {
+                user: user.clone(),
+                user_identifier: user_identifier.to_owned(),
+                verifier: pkce.verifier,
+                authorization_url: authorization_url.clone(),
+                created_at: Instant::now(),
+            },
+        );
+        Ok(authorization_url)
+    }
+
+    async fn serve_callbacks(self, listener: TcpListener) {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    let service = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = service.handle_callback_connection(stream).await {
+                            tracing::warn!(
+                                error = %error,
+                                "Calendar App Home OAuth callback failed"
+                            );
+                        }
+                    });
+                }
+                Err(error) => {
+                    tracing::error!(
+                        error = %error,
+                        "Calendar App Home OAuth callback listener stopped"
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    async fn handle_callback_connection(&self, mut stream: TcpStream) -> anyhow::Result<()> {
+        let result =
+            match tokio::time::timeout(CALLBACK_TIMEOUT, read_request_target(&mut stream)).await {
+                Ok(target) => target.and_then(|target| self.callback_url(&target)),
+                Err(_) => Err(anyhow::anyhow!("OAuth callback request timed out")),
+            };
+        let response = match result {
+            Ok(callback_url) => match self.complete_authorization(&callback_url).await {
+                Ok(()) => http_response(
+                    "200 OK",
+                    "Google Calendar is connected. You can close this page and return to Slack.",
+                ),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "Calendar App Home authorization could not be completed"
+                    );
+                    http_response(
+                        "400 Bad Request",
+                        "Google Calendar authorization failed. Return to Slack and try again.",
+                    )
+                }
+            },
+            Err(error) => {
+                tracing::warn!(error = %error, "invalid Calendar App Home OAuth callback");
+                http_response("400 Bad Request", "Invalid OAuth callback request.")
+            }
+        };
+        stream.write_all(response.as_bytes()).await?;
+        stream.shutdown().await?;
+        Ok(())
+    }
+
+    fn callback_url(&self, request_target: &str) -> anyhow::Result<Url> {
+        let request_url = Url::parse(&format!("http://callback{request_target}"))
+            .context("callback request target is not a valid URL")?;
+        if request_url.path() != self.redirect_uri.path() {
+            bail!("callback request path does not match configured redirect URI");
+        }
+        let mut callback_url = self.redirect_uri.clone();
+        callback_url.set_query(request_url.query());
+        Ok(callback_url)
+    }
+
+    async fn complete_authorization(&self, callback_url: &Url) -> anyhow::Result<()> {
+        let parameters: HashMap<_, _> = callback_url.query_pairs().into_owned().collect();
+        let state = parameters
+            .get("state")
+            .ok_or_else(|| anyhow::anyhow!("OAuth callback did not contain state"))?;
+        let pending = self
+            .pending_authorizations
+            .lock()
+            .await
+            .remove(state)
+            .ok_or_else(|| anyhow::anyhow!("OAuth callback state is unknown or expired"))?;
+        if pending.created_at.elapsed() >= AUTHORIZATION_TTL {
+            bail!("OAuth callback state is expired");
+        }
+        if let Some(error) = parameters.get("error") {
+            bail!("Keycard authorization returned OAuth error `{error}`");
+        }
+        let code = parameters
+            .get("code")
+            .ok_or_else(|| anyhow::anyhow!("OAuth callback did not contain a code"))?;
+        self.public_keycard
+            .authorization_code(
+                code,
+                pending.verifier.into_inner(),
+                self.redirect_uri.clone(),
+            )
+            .client_id(self.public_client_id.clone())
+            .send()
+            .await
+            .context("Keycard authorization code exchange failed")?;
+
+        // Prove that consent established usable Calendar delegation for the
+        // Slack-linked identifier. A different Keycard login cannot authorize
+        // or expose Calendar data for this expected identity.
+        self.upcoming_events_authorized(&pending.user_identifier)
+            .await
+            .map_err(|_| anyhow::anyhow!("authorized Keycard user did not match Slack identity"))?;
+        let _ = self.authorized_users.send(pending.user);
+        Ok(())
+    }
+
     async fn get_with_retry(
         &self,
         url: Url,
@@ -297,7 +584,10 @@ impl CalendarHome {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CalendarError {
     #[error("Google Calendar authorization is required")]
-    Authorization(&'static str),
+    Authorization {
+        message: &'static str,
+        authorization_url: Option<Url>,
+    },
     #[error("Google Calendar rate limit exceeded")]
     RateLimited,
     #[error("calendar event is stale or missing")]
@@ -311,12 +601,14 @@ pub(crate) enum CalendarError {
 impl CalendarError {
     fn from_keycard(error: KeycardError) -> Self {
         match error.as_oauth().map(|error| error.code.as_str()) {
-            Some("interaction_required" | "invalid_grant") => Self::Authorization(
-                "Authorize Google Calendar for this Slack account, then reopen this tab.",
-            ),
-            Some("access_denied") => Self::Authorization(
-                "Calendar access is not allowed for this account. Reauthorize or ask your Keycard administrator to enable the Calendar dependency and impersonation policy.",
-            ),
+            Some("interaction_required" | "invalid_grant") => Self::Authorization {
+                message: "Authorize Google Calendar for this Slack account, then return to Slack.",
+                authorization_url: None,
+            },
+            Some("access_denied") => Self::Authorization {
+                message: "Calendar access is not allowed for this account. Reauthorize or ask your Keycard administrator to enable the Calendar dependency and impersonation policy.",
+                authorization_url: None,
+            },
             _ => Self::Unavailable,
         }
     }
@@ -325,9 +617,10 @@ impl CalendarError {
 fn checked_response(response: reqwest::Response) -> Result<reqwest::Response, CalendarError> {
     match response.status() {
         status if status.is_success() => Ok(response),
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(CalendarError::Authorization(
-            "Google Calendar authorization is missing, revoked, or does not include the required calendar.events scope. Reauthorize, then reopen this tab.",
-        )),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(CalendarError::Authorization {
+            message: "Google Calendar authorization is missing, revoked, or does not include the required calendar.events scope. Reauthorize, then return to Slack.",
+            authorization_url: None,
+        }),
         StatusCode::NOT_FOUND | StatusCode::GONE | StatusCode::PRECONDITION_FAILED => {
             Err(CalendarError::Stale)
         }
@@ -775,6 +1068,12 @@ fn truncate(value: &str, max_chars: usize) -> String {
     output
 }
 
+fn random_state() -> anyhow::Result<String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(|_| anyhow::anyhow!("could not generate OAuth state"))?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
 fn required_env(name: &str) -> anyhow::Result<String> {
     std::env::var(name).map_err(|error| anyhow::anyhow!("{name}: {error}"))
 }
@@ -890,12 +1189,67 @@ mod tests {
         assert!(payload.contains(DECLINE_ACTION));
     }
 
+    #[test]
+    fn callback_accepts_only_the_registered_path() {
+        let home = calendar_home_for_test();
+        assert_eq!(
+            home.callback_url("/calendar/callback?code=secret&state=random")
+                .unwrap()
+                .as_str(),
+            "https://example.com/calendar/callback?code=secret&state=random"
+        );
+        assert!(home.callback_url("/wrong?state=random").is_err());
+    }
+
+    #[test]
+    fn oauth_state_is_random_and_url_safe() {
+        let first = random_state().unwrap();
+        let second = random_state().unwrap();
+        assert_eq!(first.len(), 43);
+        assert_ne!(first, second);
+        assert!(
+            first
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric()
+                    || character == '-'
+                    || character == '_')
+        );
+    }
+
+    #[test]
+    fn authorization_state_links_only_when_a_flow_was_started() {
+        let home = calendar_home_for_test();
+        let without_url = serde_json::to_string(&home.error_view(&CalendarError::Authorization {
+            message: "Authorize.",
+            authorization_url: None,
+        }))
+        .unwrap();
+        let with_url = serde_json::to_string(&home.error_view(&CalendarError::Authorization {
+            message: "Authorize.",
+            authorization_url: Some(Url::parse("https://issuer.example/authorize").unwrap()),
+        }))
+        .unwrap();
+        assert!(!without_url.contains("calendar_authorize"));
+        assert!(with_url.contains("calendar_authorize"));
+        assert!(with_url.contains("https://issuer.example/authorize"));
+    }
+
     fn home_view_for_test(events: &[CalendarEvent]) -> SlackView {
-        let home = CalendarHome {
-            keycard: KeycardClient::new("https://example.keycard.cloud").unwrap(),
+        calendar_home_for_test().events_view(&user(), events)
+    }
+
+    fn calendar_home_for_test() -> CalendarHome {
+        let keycard = KeycardClient::new("https://example.keycard.cloud").unwrap();
+        let (authorized_users, _) = broadcast::channel(1);
+        CalendarHome {
+            keycard: keycard.clone(),
+            public_keycard: keycard,
             http: reqwest::Client::new(),
-            reauthorization_url: Url::parse("https://example.com/authorize").unwrap(),
-        };
-        home.events_view(&user(), events)
+            public_client_id: "public-client".to_owned(),
+            redirect_uri: Url::parse("https://example.com/calendar/callback").unwrap(),
+            callback_bind: DEFAULT_CALLBACK_BIND.parse().unwrap(),
+            pending_authorizations: Arc::new(Mutex::new(HashMap::new())),
+            authorized_users,
+        }
     }
 }
