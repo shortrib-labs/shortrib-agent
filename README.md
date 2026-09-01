@@ -16,6 +16,13 @@ Calendar tools are discovered and added to the running agent after a user
 authorizes Google Calendar. Each tool call resolves the requesting user's own
 authenticated MCP connection; restored users reconnect lazily after a restart.
 
+The Slack App Home is a separate deterministic path: it does not invoke the
+model or MCP. It resolves the authenticated Slack user's workspace email to a
+Keycard user, obtains a short-lived user-impersonated token, and calls Google
+Calendar API v3 directly. It shows the next five non-declined events and lets
+invitees accept, tentatively accept, or decline. See the
+[App Home deployment guide](docs/slack-app-home.md).
+
 ## Calendar messages in Slack
 
 Calendar MCP event results render directly as Slack Block Kit without a

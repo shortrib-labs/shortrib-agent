@@ -1,4 +1,5 @@
 mod agent;
+mod app_home;
 mod bot;
 mod calendar_blocks;
 mod google_calendar;

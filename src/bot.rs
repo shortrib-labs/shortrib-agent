@@ -1,7 +1,13 @@
 use slack_morphism::{errors::SlackClientError, prelude::*};
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::sync::Mutex;
 
 use crate::agent::{Agent, ChatResponse};
+use crate::app_home::{ActionValue, CalendarError, CalendarHome, InvitationResponse};
 use crate::calendar_blocks::calendar_message;
 use crate::state::{ConversationHistory, ConversationKey, UserKey, UserStateStore};
 
@@ -12,6 +18,10 @@ pub struct SlackBot {
     users: UserStateStore,
     bot_token: SlackApiToken,
     app_token: SlackApiToken,
+    authorized_team: Option<SlackTeamId>,
+    calendar_home: CalendarHome,
+    home_revisions: Mutex<HashMap<UserKey, u64>>,
+    handled_actions: Mutex<HashMap<String, Instant>>,
 }
 
 impl SlackBot {
@@ -21,11 +31,17 @@ impl SlackBot {
             users: UserStateStore::default(),
             bot_token: SlackApiToken::new(config_env_var("SLACK_BOT_TOKEN")?.into()),
             app_token: SlackApiToken::new(config_env_var("SLACK_APP_TOKEN")?.into()),
+            authorized_team: None,
+            calendar_home: CalendarHome::from_env().map_err(|error| error.to_string())?,
+            home_revisions: Mutex::new(HashMap::new()),
+            handled_actions: Mutex::new(HashMap::new()),
         })
     }
 
-    pub async fn start(self) -> BotResult<()> {
+    pub async fn start(mut self) -> BotResult<()> {
         let client = Arc::new(SlackClient::new(SlackClientHyperConnector::new()?));
+        let auth = client.open_session(&self.bot_token).auth_test().await?;
+        self.authorized_team = Some(auth.team_id);
         let bot = Arc::new(self);
 
         let socket_mode_callbacks = SlackSocketModeListenerCallbacks::new()
@@ -61,12 +77,12 @@ impl SlackBot {
 
     async fn interaction_callback(
         event: SlackInteractionEvent,
-        _client: Arc<SlackHyperClient>,
+        client: Arc<SlackHyperClient>,
         states: SlackClientEventsUserState,
     ) -> BotResult<()> {
         Self::from_state(states)
             .await?
-            .handle_interaction(event)
+            .handle_interaction(event, client)
             .await
     }
 
@@ -108,34 +124,53 @@ impl SlackBot {
         event: SlackPushEventCallback,
         client: Arc<SlackHyperClient>,
     ) -> BotResult<()> {
-        if let SlackEventCallbackBody::Message(message) = event.event {
-            if message.sender.bot_id.is_some() {
-                return Ok(());
-            }
+        if !self.is_authorized_team(&event.team_id) {
+            tracing::warn!("ignored Slack event for an unauthorized team");
+            return Ok(());
+        }
 
-            let Some(user_id) = message.sender.user.clone() else {
-                return Ok(());
-            };
-            let Some(channel_id) = message.origin.channel.clone() else {
-                return Ok(());
-            };
-            let user_key = UserKey::new(event.team_id, user_id.clone());
-            let conversation = self
-                .users
-                .conversation(
-                    user_key.clone(),
-                    ConversationKey::new(channel_id, message.origin.thread_ts.clone()),
-                )
-                .await;
-
-            tokio::spawn(async move {
-                if let Err(error) = self
-                    .chat(user_key, user_id, message, client, conversation)
-                    .await
-                {
-                    eprintln!("Chat error: {error:#}");
+        match event.event {
+            SlackEventCallbackBody::Message(message) => {
+                if message.sender.bot_id.is_some() {
+                    return Ok(());
                 }
-            });
+
+                let Some(user_id) = message.sender.user.clone() else {
+                    return Ok(());
+                };
+                let Some(channel_id) = message.origin.channel.clone() else {
+                    return Ok(());
+                };
+                let user_key = UserKey::new(event.team_id, user_id.clone());
+                let conversation = self
+                    .users
+                    .conversation(
+                        user_key.clone(),
+                        ConversationKey::new(channel_id, message.origin.thread_ts.clone()),
+                    )
+                    .await;
+
+                tokio::spawn(async move {
+                    if let Err(error) = self
+                        .chat(user_key, user_id, message, client, conversation)
+                        .await
+                    {
+                        tracing::warn!(error = %error, "Slack chat request failed");
+                    }
+                });
+            }
+            SlackEventCallbackBody::AppHomeOpened(home)
+                if home.tab.as_deref().is_none_or(|tab| tab == "home") =>
+            {
+                let user = UserKey::new(event.team_id, home.user);
+                let revision = self.next_home_revision(&user).await;
+                tokio::spawn(async move {
+                    if let Err(error) = self.refresh_home(user, revision, client).await {
+                        tracing::warn!(error = %error, "Slack App Home refresh failed");
+                    }
+                });
+            }
+            _ => {}
         }
 
         Ok(())
@@ -195,9 +230,220 @@ impl SlackBot {
         Ok(())
     }
 
-    async fn handle_interaction(&self, event: SlackInteractionEvent) -> BotResult<()> {
-        println!("Unhandled interaction event: {event:#?}");
+    async fn handle_interaction(
+        self: Arc<Self>,
+        event: SlackInteractionEvent,
+        client: Arc<SlackHyperClient>,
+    ) -> BotResult<()> {
+        let SlackInteractionEvent::BlockActions(event) = event else {
+            return Ok(());
+        };
+        if !self.is_authorized_team(&event.team.id) {
+            tracing::warn!("ignored Slack interaction for an unauthorized team");
+            return Ok(());
+        }
+        if !matches!(&event.container, SlackInteractionActionContainer::View(_))
+            || !matches!(&event.view, Some(SlackView::Home(_)))
+        {
+            return Ok(());
+        }
+        let Some(slack_user) = event.user else {
+            return Ok(());
+        };
+        let user = UserKey::new(event.team.id, slack_user.id);
+        let Some(action) = event.actions.and_then(|actions| actions.into_iter().next()) else {
+            return Ok(());
+        };
+        let Some(response) = InvitationResponse::from_action_id(&action.action_id.0) else {
+            return Ok(());
+        };
+        let Some(value) = action.value.as_deref().and_then(ActionValue::decode) else {
+            tracing::warn!("ignored malformed Calendar App Home action");
+            return Ok(());
+        };
+        if !value.belongs_to(&user) {
+            tracing::warn!("blocked cross-user Calendar App Home action replay");
+            return Ok(());
+        }
+        let Some(action_ts) = action.action_ts else {
+            return Ok(());
+        };
+        let replay_key = format!(
+            "{}\0{}\0{}\0{}",
+            user.team_id().0,
+            user.user_id().0,
+            action_ts.0,
+            action.action_id.0
+        );
+        if !self.mark_action(replay_key).await {
+            return Ok(());
+        }
+
+        let event_id = value.event_id().to_owned();
+        let revision = self.next_home_revision(&user).await;
+        tokio::spawn(async move {
+            if let Err(error) = self
+                .handle_calendar_response(user, event_id, response, revision, client)
+                .await
+            {
+                tracing::warn!(error = %error, "Calendar invitation response failed");
+            }
+        });
         Ok(())
+    }
+
+    async fn refresh_home(
+        &self,
+        user: UserKey,
+        revision: u64,
+        client: Arc<SlackHyperClient>,
+    ) -> BotResult<()> {
+        self.publish_home(
+            user.user_id().clone(),
+            self.calendar_home.loading_view(),
+            &client,
+        )
+        .await?;
+        let result = match self.slack_user_identifier(&user, &client).await {
+            Ok(identifier) => self.calendar_home.upcoming_events(&identifier).await,
+            Err(error) => Err(error),
+        };
+        if !self.is_current_home_revision(&user, revision).await {
+            return Ok(());
+        }
+        let view = match result {
+            Ok(events) => self.calendar_home.events_view(&user, &events),
+            Err(error) => self.calendar_home.error_view(&error),
+        };
+        self.publish_home(user.user_id().clone(), view, &client)
+            .await
+    }
+
+    async fn handle_calendar_response(
+        &self,
+        user: UserKey,
+        event_id: String,
+        response: InvitationResponse,
+        revision: u64,
+        client: Arc<SlackHyperClient>,
+    ) -> BotResult<()> {
+        self.publish_home(
+            user.user_id().clone(),
+            self.calendar_home.updating_view(),
+            &client,
+        )
+        .await?;
+        let identifier = match self.slack_user_identifier(&user, &client).await {
+            Ok(identifier) => identifier,
+            Err(error) => {
+                if self.is_current_home_revision(&user, revision).await {
+                    self.publish_home(
+                        user.user_id().clone(),
+                        self.calendar_home.error_view(&error),
+                        &client,
+                    )
+                    .await?;
+                }
+                return Ok(());
+            }
+        };
+
+        let response_result = self
+            .calendar_home
+            .respond(&identifier, &event_id, response)
+            .await;
+        if let Err(error) = response_result
+            && !matches!(error, CalendarError::Stale | CalendarError::NotActionable)
+        {
+            if self.is_current_home_revision(&user, revision).await {
+                self.publish_home(
+                    user.user_id().clone(),
+                    self.calendar_home.error_view(&error),
+                    &client,
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+
+        let events = self.calendar_home.upcoming_events(&identifier).await;
+        if !self.is_current_home_revision(&user, revision).await {
+            return Ok(());
+        }
+        let view = match events {
+            Ok(events) => self.calendar_home.events_view(&user, &events),
+            Err(error) => self.calendar_home.error_view(&error),
+        };
+        self.publish_home(user.user_id().clone(), view, &client)
+            .await
+    }
+
+    async fn slack_user_identifier(
+        &self,
+        user: &UserKey,
+        client: &SlackHyperClient,
+    ) -> Result<String, CalendarError> {
+        let response = client
+            .open_session(&self.bot_token)
+            .users_info(&SlackApiUsersInfoRequest::new(user.user_id().clone()))
+            .await
+            .map_err(|_| CalendarError::Authorization(
+                "I couldn’t verify your Slack email. Ask an administrator to grant the bot users:read and users:read.email, then reinstall it.",
+            ))?;
+        if response.user.id != *user.user_id()
+            || response
+                .user
+                .team_id
+                .as_ref()
+                .is_some_and(|team| team != user.team_id())
+        {
+            return Err(CalendarError::Authorization(
+                "Your Slack identity could not be verified for this workspace.",
+            ));
+        }
+        response
+            .user
+            .profile
+            .and_then(|profile| profile.email)
+            .map(|email| email.0)
+            .ok_or(CalendarError::Authorization(
+                "Your Slack profile needs a verified email linked to the same Keycard user before Calendar can be shown.",
+            ))
+    }
+
+    async fn publish_home(
+        &self,
+        user_id: SlackUserId,
+        view: SlackView,
+        client: &SlackHyperClient,
+    ) -> BotResult<()> {
+        client
+            .open_session(&self.bot_token)
+            .views_publish(&SlackApiViewsPublishRequest::new(user_id, view))
+            .await?;
+        Ok(())
+    }
+
+    fn is_authorized_team(&self, team_id: &SlackTeamId) -> bool {
+        self.authorized_team.as_ref() == Some(team_id)
+    }
+
+    async fn next_home_revision(&self, user: &UserKey) -> u64 {
+        let mut revisions = self.home_revisions.lock().await;
+        let revision = revisions.entry(user.clone()).or_default();
+        *revision = revision.wrapping_add(1);
+        *revision
+    }
+
+    async fn is_current_home_revision(&self, user: &UserKey, revision: u64) -> bool {
+        self.home_revisions.lock().await.get(user) == Some(&revision)
+    }
+
+    async fn mark_action(&self, key: String) -> bool {
+        const RETENTION: Duration = Duration::from_secs(600);
+        let mut handled = self.handled_actions.lock().await;
+        handled.retain(|_, timestamp| timestamp.elapsed() < RETENTION);
+        handled.insert(key, Instant::now()).is_none()
     }
 
     fn handle_error(
