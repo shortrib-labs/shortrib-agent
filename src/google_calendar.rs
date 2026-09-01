@@ -13,7 +13,8 @@ use keycard_rmcp::{
         model::{CallToolRequestParams, JsonObject, Tool},
         service::{Peer, RunningService},
         transport::{
-            AuthorizationRequest, auth::OAuthState,
+            AuthorizationRequest,
+            auth::{AuthorizationManager, OAuthState},
             streamable_http_client::StreamableHttpClientTransportConfig,
         },
     },
@@ -30,7 +31,7 @@ use tokio::{
     sync::{Mutex, OnceCell, RwLock},
 };
 
-use crate::state::UserKey;
+use crate::{oauth_store::CredentialVault, state::UserKey};
 
 const DEFAULT_MCP_URL: &str =
     "https://google-calendar-mcp-hrlw48pl49z9x55u3a2kremvhe.mcp.gateway.context.cloud/mcp/v1";
@@ -119,6 +120,7 @@ pub(crate) struct GoogleCalendarMcp {
     config: Config,
     pending: Mutex<HashMap<String, PendingAuthorization>>,
     connections: RwLock<HashMap<UserKey, Arc<UserConnection>>>,
+    credential_vault: Option<CredentialVault>,
     /// The agent's tool server. Calendar tools are added to it once the
     /// first user authorizes; see [`Self::register_calendar_tools`].
     tools: ToolServerHandle,
@@ -129,6 +131,7 @@ impl GoogleCalendarMcp {
     /// Start the service and register [`CONNECT_TOOL`] with `tools`.
     pub(crate) async fn from_env(tools: ToolServerHandle) -> Result<Arc<Self>> {
         let config = Config::from_env()?;
+        let credential_vault = CredentialVault::from_env()?;
         let listener = TcpListener::bind(config.callback_bind)
             .await
             .with_context(|| {
@@ -141,6 +144,7 @@ impl GoogleCalendarMcp {
             config,
             pending: Mutex::new(HashMap::new()),
             connections: RwLock::new(HashMap::new()),
+            credential_vault,
             tools,
             calendar_tools_registered: OnceCell::new(),
         });
@@ -191,9 +195,25 @@ impl GoogleCalendarMcp {
             return Ok(Err(authorization.authorization_url.clone()));
         }
 
-        let mut oauth = OAuthState::new(&self.config.mcp_url, None)
+        let mut manager = AuthorizationManager::new(&self.config.mcp_url)
             .await
-            .context("failed to initialize Google Calendar OAuth discovery")?;
+            .context("failed to initialize Google Calendar OAuth")?;
+        if let Some(vault) = &self.credential_vault {
+            manager.set_credential_store(vault.store(user));
+            if manager
+                .initialize_from_store()
+                .await
+                .context("failed to restore Google Calendar OAuth credentials")?
+            {
+                let peer = self
+                    .connect(user.clone(), manager)
+                    .await
+                    .context("failed to restore Google Calendar MCP connection")?;
+                return Ok(Ok(peer));
+            }
+        }
+
+        let mut oauth = OAuthState::Unauthorized(manager);
         oauth
             .start_authorization(
                 AuthorizationRequest::new(self.config.redirect_uri.as_str())
@@ -218,6 +238,27 @@ impl GoogleCalendarMcp {
             },
         );
         Ok(Err(authorization_url))
+    }
+
+    async fn connect(
+        &self,
+        user: UserKey,
+        manager: AuthorizationManager,
+    ) -> Result<Peer<RoleClient>> {
+        let transport = authorized_streamable_http_transport(
+            manager,
+            StreamableHttpClientTransportConfig::with_uri(self.config.mcp_url.as_str()),
+        );
+        let client = ().serve(transport).await.context("MCP handshake failed")?;
+        let peer = client.peer().clone();
+        self.connections.write().await.insert(
+            user,
+            Arc::new(UserConnection {
+                _client: client,
+                peer: peer.clone(),
+            }),
+        );
+        Ok(peer)
     }
 
     async fn serve_callbacks(self: Arc<Self>, listener: TcpListener) {
@@ -298,20 +339,7 @@ impl GoogleCalendarMcp {
             .oauth
             .into_authorization_manager()
             .ok_or_else(|| anyhow!("OAuth authorization did not produce a manager"))?;
-        let transport = authorized_streamable_http_transport(
-            manager,
-            StreamableHttpClientTransportConfig::with_uri(self.config.mcp_url.as_str()),
-        );
-        let client = ().serve(transport).await.context("MCP handshake failed")?;
-        let peer = client.peer().clone();
-
-        self.connections.write().await.insert(
-            pending.user,
-            Arc::new(UserConnection {
-                _client: client,
-                peer: peer.clone(),
-            }),
-        );
+        let peer = self.connect(pending.user, manager).await?;
         if let Err(error) = self.register_calendar_tools(&peer).await {
             tracing::warn!(error = %error, "Google Calendar tools could not be registered");
         }
@@ -529,6 +557,7 @@ mod tests {
             config,
             pending: Mutex::new(HashMap::new()),
             connections: RwLock::new(HashMap::new()),
+            credential_vault: None,
             tools: rig::tool::server::ToolServer::new().run(),
             calendar_tools_registered: OnceCell::new(),
         };

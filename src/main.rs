@@ -1,6 +1,7 @@
 mod agent;
 mod bot;
 mod google_calendar;
+mod oauth_store;
 mod state;
 
 use agent::Agent;

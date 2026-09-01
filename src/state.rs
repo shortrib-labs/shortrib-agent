@@ -15,6 +15,10 @@ impl UserKey {
     pub(crate) fn new(team_id: SlackTeamId, user_id: SlackUserId) -> Self {
         Self { team_id, user_id }
     }
+
+    pub(crate) fn oauth_storage_identity(&self) -> String {
+        format!("{}\0{}", self.team_id.0, self.user_id.0)
+    }
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
