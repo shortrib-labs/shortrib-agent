@@ -1,32 +1,22 @@
-use std::sync::Arc;
-
 use anyhow::Result;
 use rig::{
     client::{AgentClientExt, ProviderClient},
     completion::{Message, Prompt},
     providers::openai,
-    tool::{DynamicTool, ToolContext},
+    tool::ToolContext,
+    tool::server::ToolServer,
 };
-use tokio::sync::OnceCell;
 
 use crate::{
-    google_calendar::{CalendarSession, GoogleCalendarMcp},
+    google_calendar::{CONNECT_TOOL, CalendarSession, GoogleCalendarMcp},
     state::UserKey,
 };
 
 const MODEL: &str = "gpt-5.5";
-const PREAMBLE: &str = "You are a helpful assistant with access to the user's Google Calendar.";
 const MAX_TURNS: usize = 10;
-const AUTHORIZE_FIRST: &str = "I need access to your Google Calendar before I can help. \
-    I've sent you a private link to authorize it; once you have, send your message again.";
 
 pub struct Agent {
-    openai_client: openai::Client,
-    google_calendar: Arc<GoogleCalendarMcp>,
-    /// Built once, from the first authorized user's tool list. The Google
-    /// Calendar MCP server only lists tools for a caller with a Google
-    /// grant, so the agent cannot be assembled at startup.
-    agent: OnceCell<rig::agent::Agent>,
+    agent: rig::agent::Agent,
 }
 
 pub struct ChatResponse {
@@ -39,11 +29,21 @@ pub struct ChatResponse {
 
 impl Agent {
     pub async fn new() -> Result<Self> {
-        Ok(Self {
-            openai_client: openai::Client::from_env()?,
-            google_calendar: GoogleCalendarMcp::from_env().await?,
-            agent: OnceCell::new(),
-        })
+        let openai_client = openai::Client::from_env()?;
+        // The tool server starts with only the connect tool; the calendar
+        // tools are added to it by `GoogleCalendarMcp` once the first user
+        // authorizes, and the agent picks them up on its next request.
+        let tools = ToolServer::new().run();
+        GoogleCalendarMcp::from_env(tools.clone()).await?;
+
+        let agent = openai_client
+            .agent(MODEL)
+            .preamble(&preamble())
+            .default_max_turns(MAX_TURNS)
+            .tool_server_handle(tools)
+            .build();
+
+        Ok(Self { agent })
     }
 
     pub async fn chat(
@@ -52,24 +52,12 @@ impl Agent {
         message: &str,
         history: &mut Vec<Message>,
     ) -> Result<ChatResponse> {
-        let agent = match self.agent.get() {
-            Some(agent) => agent,
-            None => match self.google_calendar.tools(&user).await? {
-                Ok(tools) => self.agent.get_or_init(|| async { self.build(tools) }).await,
-                Err(authorization_url) => {
-                    return Ok(ChatResponse {
-                        message: AUTHORIZE_FIRST.to_owned(),
-                        authorization_url: Some(authorization_url),
-                    });
-                }
-            },
-        };
-
         let session = CalendarSession::new(user);
         let mut context = ToolContext::new();
         context.insert(session.clone());
 
-        let response = agent
+        let response = self
+            .agent
             .prompt(message)
             .history(history.clone())
             .tool_context(context)
@@ -84,13 +72,14 @@ impl Agent {
             authorization_url: session.authorization_url(),
         })
     }
+}
 
-    fn build(&self, tools: Vec<DynamicTool>) -> rig::agent::Agent {
-        self.openai_client
-            .agent(MODEL)
-            .preamble(PREAMBLE)
-            .dynamic_tools(tools)
-            .default_max_turns(MAX_TURNS)
-            .build()
-    }
+fn preamble() -> String {
+    format!(
+        "You are a helpful assistant with access to the user's Google Calendar once they have \
+         connected it. If the user asks about their calendar and no calendar tools are \
+         available, or a calendar tool reports that the user is not connected, call \
+         `{CONNECT_TOOL}` and tell the user to open the private authorization link they were \
+         sent, then ask again."
+    )
 }

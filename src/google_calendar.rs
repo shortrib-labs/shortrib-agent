@@ -19,11 +19,15 @@ use keycard_rmcp::{
     },
 };
 use reqwest::Url;
-use rig::tool::{DynamicTool, ToolErrorKind, ToolExecutionError, ToolOutput};
+use rig::{
+    tool::server::ToolServerHandle,
+    tool::{DynamicTool, ToolErrorKind, ToolExecutionError, ToolOutput},
+};
+use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::{Mutex, RwLock},
+    sync::{Mutex, OnceCell, RwLock},
 };
 
 use crate::state::UserKey;
@@ -115,10 +119,15 @@ pub(crate) struct GoogleCalendarMcp {
     config: Config,
     pending: Mutex<HashMap<String, PendingAuthorization>>,
     connections: RwLock<HashMap<UserKey, Arc<UserConnection>>>,
+    /// The agent's tool server. Calendar tools are added to it once the
+    /// first user authorizes; see [`Self::register_calendar_tools`].
+    tools: ToolServerHandle,
+    calendar_tools_registered: OnceCell<()>,
 }
 
 impl GoogleCalendarMcp {
-    pub(crate) async fn from_env() -> Result<Arc<Self>> {
+    /// Start the service and register [`CONNECT_TOOL`] with `tools`.
+    pub(crate) async fn from_env(tools: ToolServerHandle) -> Result<Arc<Self>> {
         let config = Config::from_env()?;
         let listener = TcpListener::bind(config.callback_bind)
             .await
@@ -132,35 +141,41 @@ impl GoogleCalendarMcp {
             config,
             pending: Mutex::new(HashMap::new()),
             connections: RwLock::new(HashMap::new()),
+            tools,
+            calendar_tools_registered: OnceCell::new(),
         });
+        service
+            .tools
+            .add_dynamic_tool(connect_tool(Arc::clone(&service)))
+            .await;
         tokio::spawn(Arc::clone(&service).serve_callbacks(listener));
 
         Ok(service)
     }
 
-    /// The calendar tools, discovered through `user`'s connection. The
-    /// server only answers `tools/list` for a caller with a Google grant, so
-    /// discovery has to ride on an authorized user; the resulting tools are
-    /// user-agnostic and resolve the requesting user's connection from the
-    /// [`CalendarSession`] in the tool context at call time.
-    ///
-    /// `Err(url)` means `user` has not authorized yet and must visit `url`.
-    pub(crate) async fn tools(
-        self: &Arc<Self>,
-        user: &UserKey,
-    ) -> Result<Result<Vec<DynamicTool>, String>> {
-        let peer = match self.peer_for(user).await? {
-            Ok(peer) => peer,
-            Err(authorization_url) => return Ok(Err(authorization_url)),
-        };
-        let tools = peer
-            .list_all_tools()
+    /// Discover the server's tools over `peer` and add them to the agent's
+    /// tool server, once per process. The server only answers `tools/list`
+    /// for a caller with a Google grant, so discovery rides on the first
+    /// user to authorize; the resulting tools are user-agnostic and resolve
+    /// the requesting user's connection from the [`CalendarSession`] in the
+    /// tool context at call time. A failed attempt is retried on the next
+    /// authorization.
+    async fn register_calendar_tools(self: &Arc<Self>, peer: &Peer<RoleClient>) -> Result<()> {
+        self.calendar_tools_registered
+            .get_or_try_init(|| async {
+                let tools = peer
+                    .list_all_tools()
+                    .await
+                    .context("failed to discover Google Calendar tools")?;
+                for tool in tools {
+                    self.tools
+                        .add_dynamic_tool(dynamic_tool(tool, Arc::clone(self)))
+                        .await;
+                }
+                Ok(())
+            })
             .await
-            .context("failed to discover Google Calendar tools")?;
-        Ok(Ok(tools
-            .into_iter()
-            .map(|tool| dynamic_tool(tool, Arc::clone(self)))
-            .collect()))
+            .map(|_| ())
     }
 
     /// The user's MCP connection, or the authorization URL they must visit
@@ -224,7 +239,7 @@ impl GoogleCalendarMcp {
         }
     }
 
-    async fn handle_callback_connection(&self, mut stream: TcpStream) -> Result<()> {
+    async fn handle_callback_connection(self: &Arc<Self>, mut stream: TcpStream) -> Result<()> {
         let result =
             match tokio::time::timeout(CALLBACK_TIMEOUT, read_request_target(&mut stream)).await {
                 Ok(target) => target.and_then(|target| self.callback_url(&target)),
@@ -268,7 +283,7 @@ impl GoogleCalendarMcp {
         Ok(callback_url.into())
     }
 
-    async fn complete_authorization(&self, callback_url: &str) -> Result<()> {
+    async fn complete_authorization(self: &Arc<Self>, callback_url: &str) -> Result<()> {
         let state = callback_state(callback_url)?;
         let Some(mut pending) = self.pending.lock().await.remove(&state) else {
             bail!("OAuth callback state is unknown or expired");
@@ -294,11 +309,58 @@ impl GoogleCalendarMcp {
             pending.user,
             Arc::new(UserConnection {
                 _client: client,
-                peer,
+                peer: peer.clone(),
             }),
         );
+        if let Err(error) = self.register_calendar_tools(&peer).await {
+            tracing::warn!(error = %error, "Google Calendar tools could not be registered");
+        }
         Ok(())
     }
+}
+
+/// Name of the tool the model calls to start a user's authorization.
+pub(crate) const CONNECT_TOOL: &str = "connect_google_calendar";
+
+/// The one tool that is always registered: it lets the model request a
+/// user's Google Calendar authorization before the calendar tools exist,
+/// and reports "already connected" afterwards.
+fn connect_tool(service: Arc<GoogleCalendarMcp>) -> DynamicTool {
+    DynamicTool::new(
+        CONNECT_TOOL,
+        "Connect the user's Google Calendar. Call this when the user asks about their calendar \
+         and no calendar tools are available, or a calendar tool reports the user is not \
+         connected. It sends the user a private authorization link.",
+        json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+        move |context, _arguments| {
+            let service = Arc::clone(&service);
+            let session = context.get::<CalendarSession>().cloned();
+            Box::pin(async move {
+                let session = session.ok_or_else(|| {
+                    ToolExecutionError::new(
+                        ToolErrorKind::Other,
+                        "Google Calendar tools require a CalendarSession in the tool context",
+                    )
+                })?;
+                match service.peer_for(&session.user).await {
+                    Ok(Ok(_)) => Ok(ToolOutput::text(
+                        "Google Calendar is already connected for this user.",
+                    )),
+                    Ok(Err(authorization_url)) => {
+                        session.request_authorization(authorization_url);
+                        Ok(ToolOutput::text(
+                            "An authorization link has been sent to the user privately. Ask them \
+                             to open it, then repeat their request once they have authorized.",
+                        ))
+                    }
+                    Err(error) => Err(ToolExecutionError::new(
+                        ToolErrorKind::Provider,
+                        format!("Google Calendar authorization could not be started: {error:#}"),
+                    )),
+                }
+            })
+        },
+    )
 }
 
 fn dynamic_tool(tool: Tool, service: Arc<GoogleCalendarMcp>) -> DynamicTool {
@@ -452,6 +514,8 @@ mod tests {
             config,
             pending: Mutex::new(HashMap::new()),
             connections: RwLock::new(HashMap::new()),
+            tools: rig::tool::server::ToolServer::new().run(),
+            calendar_tools_registered: OnceCell::new(),
         };
 
         assert_eq!(
