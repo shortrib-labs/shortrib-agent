@@ -82,6 +82,7 @@ impl Config {
 pub(crate) struct CalendarSession {
     user: UserKey,
     authorization_url: Arc<SyncMutex<Option<String>>>,
+    tool_outputs: Arc<SyncMutex<Vec<CalendarToolOutput>>>,
 }
 
 impl CalendarSession {
@@ -89,6 +90,7 @@ impl CalendarSession {
         Self {
             user,
             authorization_url: Arc::new(SyncMutex::new(None)),
+            tool_outputs: Arc::new(SyncMutex::new(Vec::new())),
         }
     }
 
@@ -100,6 +102,44 @@ impl CalendarSession {
     fn request_authorization(&self, url: String) {
         if let Ok(mut slot) = self.authorization_url.lock() {
             *slot = Some(url);
+        }
+    }
+
+    pub(crate) fn tool_outputs(&self) -> Vec<CalendarToolOutput> {
+        self.tool_outputs
+            .lock()
+            .map(|outputs| outputs.clone())
+            .unwrap_or_default()
+    }
+
+    fn record_tool_output(&self, output: CalendarToolOutput) {
+        if let Ok(mut outputs) = self.tool_outputs.lock() {
+            outputs.push(output);
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CalendarToolOutput {
+    pub(crate) tool_name: String,
+    pub(crate) payload: Option<serde_json::Value>,
+    pub(crate) error: Option<String>,
+}
+
+impl CalendarToolOutput {
+    fn success(tool_name: String, payload: Option<serde_json::Value>) -> Self {
+        Self {
+            tool_name,
+            payload,
+            error: None,
+        }
+    }
+
+    fn error(tool_name: String, error: impl Into<String>) -> Self {
+        Self {
+            tool_name,
+            payload: None,
+            error: Some(error.into()),
         }
     }
 }
@@ -452,30 +492,68 @@ fn dynamic_tool(tool: Tool, service: Arc<GoogleCalendarMcp>) -> DynamicTool {
                 .with_source(error)
             })?;
             let result = peer
-                .call_tool(CallToolRequestParams::new(call_name).with_arguments(arguments))
-                .await
-                .map_err(|error| {
-                    ToolExecutionError::new(
+                .call_tool(CallToolRequestParams::new(call_name.clone()).with_arguments(arguments))
+                .await;
+            let result = match result {
+                Ok(result) => result,
+                Err(error) => {
+                    session.record_tool_output(CalendarToolOutput::error(
+                        call_name,
+                        "Google Calendar request failed",
+                    ));
+                    return Err(ToolExecutionError::new(
                         ToolErrorKind::Provider,
                         "Google Calendar MCP request failed",
                     )
-                    .with_source(error)
-                })?;
+                    .with_source(error));
+                }
+            };
             let output = ToolOutput::json(
                 serde_json::to_value(&result).map_err(ToolExecutionError::from_error)?,
             );
 
             if result.is_error == Some(true) {
+                session.record_tool_output(CalendarToolOutput::error(
+                    call_name,
+                    tool_error_message(&result),
+                ));
                 Err(ToolExecutionError::new(
                     ToolErrorKind::Provider,
                     "Google Calendar reported a tool execution error",
                 )
                 .with_model_output(output))
             } else {
+                session.record_tool_output(CalendarToolOutput::success(
+                    call_name,
+                    structured_tool_payload(&result),
+                ));
                 Ok(output)
             }
         })
     })
+}
+
+fn structured_tool_payload(
+    result: &keycard_rmcp::rmcp::model::CallToolResult,
+) -> Option<serde_json::Value> {
+    result.structured_content.clone().or_else(|| {
+        result
+            .content
+            .iter()
+            .filter_map(|content| content.as_text())
+            .find_map(|text| serde_json::from_str(&text.text).ok())
+    })
+}
+
+fn tool_error_message(result: &keycard_rmcp::rmcp::model::CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|content| content.as_text())
+        .map(|text| text.text.trim())
+        .find(|text| !text.is_empty())
+        .unwrap_or("Google Calendar could not complete the request")
+        .to_owned()
 }
 
 fn oauth_state(authorization_url: &str) -> Result<String> {
@@ -576,6 +654,30 @@ mod tests {
         assert_eq!(
             callback_state("https://agent.example/callback?code=secret&state=user-state").unwrap(),
             "user-state"
+        );
+    }
+
+    #[test]
+    fn structured_tool_results_are_preferred_over_text_fallbacks() {
+        let result = keycard_rmcp::rmcp::model::CallToolResult::structured(json!({
+            "events": [{ "id": "structured" }]
+        }));
+
+        assert_eq!(
+            structured_tool_payload(&result).unwrap()["events"][0]["id"],
+            "structured"
+        );
+    }
+
+    #[test]
+    fn json_text_tool_results_are_supported() {
+        let result = keycard_rmcp::rmcp::model::CallToolResult::success(vec![
+            keycard_rmcp::rmcp::model::ContentBlock::text(r#"{"events":[]}"#),
+        ]);
+
+        assert_eq!(
+            structured_tool_payload(&result),
+            Some(json!({ "events": [] }))
         );
     }
 }
