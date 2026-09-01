@@ -18,10 +18,10 @@ authenticated MCP connection; restored users reconnect lazily after a restart.
 
 ## Calendar messages in Slack
 
-Calendar MCP event results render as Slack Block Kit alongside the assistant's
-summary. Each event includes its title, viewer-local date and time (or an
-all-day date range), location, a sanitized and truncated description, and
-available meeting and Google Calendar links.
+Calendar MCP event results render directly as Slack Block Kit without a
+duplicate visible assistant summary. Each event includes its title,
+viewer-local date and time (or an all-day date range), location, a sanitized
+and truncated description, and available meeting and Google Calendar links.
 
 The renderer provides explicit empty and error states. To stay within Slack's
 limits, it renders at most 20 distinct events, caps section text at 3,000

@@ -66,14 +66,9 @@ pub(crate) fn calendar_message(
         return SlackMessageContent::new().with_text(fallback);
     }
 
-    let mut blocks = Vec::new();
-    if !response.trim().is_empty() {
-        blocks.push(section(truncate(&response, MAX_SECTION_TEXT)));
-        blocks.push(SlackDividerBlock::new().into());
-    }
-    blocks.push(
+    let mut blocks = vec![
         SlackHeaderBlock::new(SlackBlockPlainText::new("Google Calendar".to_owned()).into()).into(),
-    );
+    ];
 
     if events.is_empty() && saw_empty_list {
         blocks.push(section(":calendar: No calendar events found.".to_owned()));
@@ -354,7 +349,10 @@ mod tests {
         );
 
         let texts = block_texts(&message);
-        let event = &texts[2];
+        assert_eq!(message.text.as_deref(), Some("You have one event."));
+        assert_eq!(texts[0], "Google Calendar");
+        assert!(!texts.iter().any(|text| text == "You have one event."));
+        let event = &texts[1];
         assert!(event.contains("*Planning &lt;review&gt;*"));
         assert!(event.contains("<!date^1788454800^{date_short_pretty} at {time}|"));
         assert!(event.contains("<!date^1788458400^{time}|"));
