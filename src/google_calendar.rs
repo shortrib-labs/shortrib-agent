@@ -45,6 +45,7 @@ struct Config {
     mcp_url: String,
     redirect_uri: Url,
     callback_bind: SocketAddr,
+    client_id: Option<String>,
 }
 
 impl Config {
@@ -67,10 +68,13 @@ impl Config {
             .parse()
             .context("GOOGLE_CALENDAR_MCP_CALLBACK_BIND must be an IP socket address")?;
 
+        let client_id = get("GOOGLE_CALENDAR_MCP_CLIENT_ID").filter(|value| !value.is_empty());
+
         Ok(Self {
             mcp_url,
             redirect_uri,
             callback_bind,
+            client_id,
         })
     }
 }
@@ -239,7 +243,7 @@ impl GoogleCalendarMcp {
             .await
             .context("failed to initialize Google Calendar OAuth")?;
         let mut authorization_challenge = None;
-        let mut preregistered_client = None;
+        let mut preregistered_client = self.config.client_id.clone();
         if let Some(vault) = &self.credential_vault {
             let credential_store = vault.store(user);
             manager.set_credential_store(credential_store.clone());
@@ -255,7 +259,9 @@ impl GoogleCalendarMcp {
                             || error.auth_challenge().is_some() =>
                     {
                         authorization_challenge = error.auth_challenge().map(str::to_owned);
-                        preregistered_client = credential_store.stored_client_id().await;
+                        if preregistered_client.is_none() {
+                            preregistered_client = credential_store.stored_client_id().await;
+                        }
                         tracing::warn!(
                             error = %error,
                             "Google Calendar authorization was rejected during connection; starting reauthorization"
@@ -643,6 +649,30 @@ mod tests {
         assert_eq!(config.mcp_url, DEFAULT_MCP_URL);
         assert_eq!(config.redirect_uri.as_str(), DEFAULT_REDIRECT_URI);
         assert_eq!(config.callback_bind, DEFAULT_CALLBACK_BIND.parse().unwrap());
+        assert_eq!(config.client_id, None);
+    }
+
+    #[test]
+    fn configuration_reads_a_preregistered_client_id() {
+        let config = Config::from_values(|name| {
+            (name == "GOOGLE_CALENDAR_MCP_CLIENT_ID")
+                .then(|| "shortrib-agent-google-mcp".to_owned())
+        })
+        .unwrap();
+
+        assert_eq!(
+            config.client_id.as_deref(),
+            Some("shortrib-agent-google-mcp")
+        );
+    }
+
+    #[test]
+    fn configuration_ignores_a_blank_client_id() {
+        let config =
+            Config::from_values(|name| (name == "GOOGLE_CALENDAR_MCP_CLIENT_ID").then(String::new))
+                .unwrap();
+
+        assert_eq!(config.client_id, None);
     }
 
     #[test]
@@ -651,6 +681,7 @@ mod tests {
             mcp_url: DEFAULT_MCP_URL.to_owned(),
             redirect_uri: "https://agent.example/oauth/callback".parse().unwrap(),
             callback_bind: DEFAULT_CALLBACK_BIND.parse().unwrap(),
+            client_id: None,
         };
         let service = GoogleCalendarMcp {
             config,
