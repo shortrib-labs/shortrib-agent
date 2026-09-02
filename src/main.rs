@@ -8,6 +8,7 @@ mod state;
 
 use agent::Agent;
 use bot::SlackBot;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -17,9 +18,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .install_default()
         .expect("failed to install rustls crypto provider");
 
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter("slack_morphism=debug")
-        .finish();
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("shortrib_agent=info,slack_morphism=debug"));
+    let subscriber = tracing_subscriber::fmt().with_env_filter(filter).finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
     let agent = Agent::new().await?;
