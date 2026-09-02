@@ -712,7 +712,9 @@ impl CalendarError {
 
     fn from_keycard(error: KeycardError) -> Self {
         match error.as_oauth().map(|error| error.code.as_str()) {
-            Some("interaction_required" | "invalid_grant") => Self::authorization_required(),
+            Some("interaction_required" | "invalid_grant" | "insufficient_authorization") => {
+                Self::authorization_required()
+            }
             Some("access_denied") => Self::Authorization {
                 message: "Calendar access is not allowed for this account. Reauthorize or ask your Keycard administrator to enable the Calendar dependency and impersonation policy.",
                 authorization_url: None,

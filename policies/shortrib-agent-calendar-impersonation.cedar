@@ -1,7 +1,7 @@
-// Keycard is default-deny: the forbid in shortrib-agent.cedar only narrows,
-// so impersonation also needs this explicit permit. Allows the confidential
-// shortrib-agent application to impersonate crdant@shortrib.io for the
-// Google Calendar API only.
+// Keycard is default-deny, so every allowed flow needs an explicit permit.
+// This grants the confidential shortrib-agent application permission to
+// impersonate an @shortrib.io user against the Google Calendar API (the App
+// Home absent-user flow). No forbid is used; the permits are the allow-list.
 @id("permit-shortrib-agent-calendar-impersonation")
 permit (
   principal is Keycard::Application,

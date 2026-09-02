@@ -47,11 +47,24 @@ writes through an atomic rename. Unix directory and file modes are set to
 Connections restore lazily: after a restart, the first Calendar request by a
 previously authorized Slack user loads their record, validates the discovered
 issuer through RMCP, reconnects to MCP, and lets Keycard refresh tokens as
-needed. If Keycard rejects restored credentials after its application or
-credential configuration changes, the agent starts a new authorization flow
-that replaces that user's stored grant on completion. Without the two
-persistence variables, credentials remain in memory and every restart requires
-authorization again.
+needed. If the MCP server rejects restored authorization with a `401` or `403`,
+the agent starts a new authorization flow using the server's challenge and
+replaces that user's stored grant on completion. Other MCP connection failures
+remain connection errors instead of sending the user through another login.
+Without the two persistence variables, credentials remain in memory and every
+restart requires authorization again.
+
+If every authorization suddenly fails at the MCP handshake with
+`invalid_token` from the gateway while Keycard's audit log shows only
+successful `credentials:issue` events for your application, check the
+**Provides** tab of your Keycard applications. A resource has one providing
+application; adding the gateway-hosted proxy to your own application's Provides
+tab silently removes it from the Zone MCP Gateway, which then rejects every
+bearer for that hostname without consulting Keycard. Your application must only
+*depend on* the proxy. The proxy's Configuration page shows the credential
+provider (Google) where one might expect the providing application, so it can
+look correct while broken. Remove the proxy from your application's Provides to
+restore it.
 
 Key rotation is not implemented. Rotate by stopping the agent, deleting the
 credential directory, installing the new key, and asking users to authorize
@@ -101,10 +114,12 @@ Google account, so they cannot run in CI. Verify a deployment as follows:
    link visible only to that Slack user.
 5. Open the link in a browser, choose the intended Google account, review the
    consent screen, and approve it. The callback page should say that Calendar
-   is connected. Do not copy the callback URL into logs or tickets because it
+   is connected; if it instead says authorization is complete, the grant was
+   stored but the MCP handshake failed and will be retried on the next
+   request. Do not copy the callback URL into logs or tickets because it
    contains a short-lived authorization code and OAuth state.
-6. Repeat the Slack question. The agent should load the live Calendar tools and
-   answer from that account. Cross-check the returned event in Google Calendar.
+6. Repeat the Slack question. The Calendar tools were discovered during the
+   callback, so the agent should answer from that account directly. Cross-check the returned event in Google Calendar.
    Use a read-only question for the first test; test create/update/delete only
    in a disposable calendar.
 7. Restart the replica without changing the encryption key or storage volume,
