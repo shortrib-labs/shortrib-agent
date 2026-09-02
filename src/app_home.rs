@@ -388,7 +388,10 @@ impl CalendarHome {
             .send()
             .await
             .map(|response| response.access_token)
-            .map_err(CalendarError::from_keycard)
+            .map_err(|error| {
+                tracing::warn!(error = %error, "Keycard Calendar impersonation exchange failed");
+                CalendarError::from_keycard(error)
+            })
     }
 
     async fn with_authorization_url<T>(
@@ -575,7 +578,9 @@ impl CalendarHome {
         // verified Keycard subject before reporting success.
         self.upcoming_events_authorized(&identity.subject)
             .await
-            .map_err(|_| anyhow::anyhow!("authorized Keycard user has no usable Calendar grant"))?;
+            .map_err(|error| {
+                anyhow::anyhow!("authorized Keycard user has no usable Calendar grant: {error}")
+            })?;
         let _ = self.authorized_users.send(pending.user);
         Ok(())
     }
