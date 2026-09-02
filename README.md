@@ -1,5 +1,7 @@
 # shortrib-agent
 
+[![Governing a Slack Agent with Keycard](https://cdn.loom.com/sessions/thumbnails/949beb769a1a4c03be57b86e6d8a2409-b6ad584a8c3f8183.gif)](https://www.loom.com/share/949beb769a1a4c03be57b86e6d8a2409)
+
 A Slack agent with dynamically loaded Google Calendar tools from the Google
 Cloud MCP gateway. Calendar authorization uses the Keycard RMCP OAuth
 composition, is isolated by Slack team and user, and can persist credentials
