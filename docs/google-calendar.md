@@ -54,6 +54,18 @@ remain connection errors instead of sending the user through another login.
 Without the two persistence variables, credentials remain in memory and every
 restart requires authorization again.
 
+If every authorization suddenly fails at the MCP handshake with
+`invalid_token` from the gateway while Keycard's audit log shows only
+successful `credentials:issue` events for your application, check the
+**Provides** tab of your Keycard applications. A resource has one providing
+application; adding the gateway-hosted proxy to your own application's Provides
+tab silently removes it from the Zone MCP Gateway, which then rejects every
+bearer for that hostname without consulting Keycard. Your application must only
+*depend on* the proxy. The proxy's Configuration page shows the credential
+provider (Google) where one might expect the providing application, so it can
+look correct while broken. Remove the proxy from your application's Provides to
+restore it.
+
 Key rotation is not implemented. Rotate by stopping the agent, deleting the
 credential directory, installing the new key, and asking users to authorize
 again. The same reauthorization procedure applies when Google or Keycard
