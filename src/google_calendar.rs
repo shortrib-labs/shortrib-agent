@@ -582,7 +582,7 @@ fn query_parameter(url: &str, name: &str) -> Option<String> {
         .find_map(|(key, value)| (key == name).then(|| value.into_owned()))
 }
 
-async fn read_request_target(stream: &mut TcpStream) -> Result<String> {
+pub(crate) async fn read_request_target(stream: &mut TcpStream) -> Result<String> {
     let mut request = Vec::with_capacity(1024);
     let mut chunk = [0_u8; 1024];
     loop {
@@ -613,7 +613,7 @@ async fn read_request_target(stream: &mut TcpStream) -> Result<String> {
     Ok(target.to_owned())
 }
 
-fn http_response(status: &str, body: &str) -> String {
+pub(crate) fn http_response(status: &str, body: &str) -> String {
     format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
