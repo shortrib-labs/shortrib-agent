@@ -11,7 +11,7 @@ use keycard_rmcp::{
     rmcp::{
         RoleClient, ServiceExt,
         model::{CallToolRequestParams, JsonObject, Tool},
-        service::{Peer, RunningService},
+        service::{ClientInitializeError, Peer, RunningService},
         transport::{
             AuthorizationRequest,
             auth::{AuthorizationManager, OAuthState},
@@ -238,6 +238,7 @@ impl GoogleCalendarMcp {
         let mut manager = AuthorizationManager::new(&self.config.mcp_url)
             .await
             .context("failed to initialize Google Calendar OAuth")?;
+        let mut authorization_challenge = None;
         if let Some(vault) = &self.credential_vault {
             let credential_store = vault.store(user);
             manager.set_credential_store(credential_store.clone());
@@ -248,27 +249,41 @@ impl GoogleCalendarMcp {
             {
                 match self.connect(user.clone(), manager).await {
                     Ok(peer) => return Ok(Ok(peer)),
-                    Err(error) => {
+                    Err(error)
+                        if error.is_authorization_required()
+                            || error.auth_challenge().is_some() =>
+                    {
+                        authorization_challenge = error.auth_challenge().map(str::to_owned);
                         tracing::warn!(
                             error = %error,
-                            "Google Calendar connection could not be restored; starting reauthorization"
+                            "Google Calendar authorization was rejected during connection; starting reauthorization"
                         );
                         manager = AuthorizationManager::new(&self.config.mcp_url)
                             .await
                             .context("failed to reinitialize Google Calendar OAuth")?;
                         manager.set_credential_store(credential_store);
                     }
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "Google Calendar MCP connection failed after OAuth authorization"
+                        );
+                        return Err(error)
+                            .context("failed to restore Google Calendar MCP connection");
+                    }
                 }
             }
         }
 
         let mut oauth = OAuthState::Unauthorized(manager);
+        let mut request = AuthorizationRequest::new(self.config.redirect_uri.as_str())
+            .with_client_name("shortrib-agent")
+            .with_application_type("web");
+        if let Some(challenge) = authorization_challenge {
+            request = request.with_challenge(challenge);
+        }
         oauth
-            .start_authorization(
-                AuthorizationRequest::new(self.config.redirect_uri.as_str())
-                    .with_client_name("shortrib-agent")
-                    .with_application_type("web"),
-            )
+            .start_authorization(request)
             .await
             .context("failed to start Google Calendar OAuth authorization")?;
         let authorization_url = oauth
@@ -293,12 +308,12 @@ impl GoogleCalendarMcp {
         &self,
         user: UserKey,
         manager: AuthorizationManager,
-    ) -> Result<Peer<RoleClient>> {
+    ) -> std::result::Result<Peer<RoleClient>, Box<ClientInitializeError>> {
         let transport = authorized_streamable_http_transport(
             manager,
             StreamableHttpClientTransportConfig::with_uri(self.config.mcp_url.as_str()),
         );
-        let client = ().serve(transport).await.context("MCP handshake failed")?;
+        let client = ().serve(transport).await.map_err(Box::new)?;
         let peer = client.peer().clone();
         self.connections.write().await.insert(
             user,
@@ -340,7 +355,7 @@ impl GoogleCalendarMcp {
             Ok(callback_url) => match self.complete_authorization(&callback_url).await {
                 Ok(()) => http_response(
                     "200 OK",
-                    "Google Calendar is connected. You can return to Slack and send your message again.",
+                    "Google Calendar authorization is complete. You can return to Slack and send your message again.",
                 ),
                 Err(error) => {
                     tracing::warn!(error = %error, "Google Calendar authorization could not be completed");
@@ -384,14 +399,6 @@ impl GoogleCalendarMcp {
             .handle_callback_url(callback_url)
             .await
             .context("OAuth code exchange failed")?;
-        let manager = pending
-            .oauth
-            .into_authorization_manager()
-            .ok_or_else(|| anyhow!("OAuth authorization did not produce a manager"))?;
-        let peer = self.connect(pending.user, manager).await?;
-        if let Err(error) = self.register_calendar_tools(&peer).await {
-            tracing::warn!(error = %error, "Google Calendar tools could not be registered");
-        }
         Ok(())
     }
 }
