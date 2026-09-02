@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use keycard_rmcp::{
     authorized_streamable_http_transport,
     rmcp::{
@@ -160,6 +161,16 @@ struct UserConnection {
     peer: Peer<RoleClient>,
 }
 
+/// What the OAuth callback achieved beyond the code exchange.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthorizationOutcome {
+    /// The grant was exchanged and the MCP connection is live.
+    Connected,
+    /// The grant was exchanged and persisted, but connecting will be
+    /// retried lazily on the user's next request.
+    Authorized,
+}
+
 pub(crate) struct GoogleCalendarMcp {
     config: Config,
     pending: Mutex<HashMap<String, PendingAuthorization>>,
@@ -264,6 +275,7 @@ impl GoogleCalendarMcp {
                         }
                         tracing::warn!(
                             error = %error,
+                            challenge = authorization_challenge.as_deref().unwrap_or("<none>"),
                             "Google Calendar authorization was rejected during connection; starting reauthorization"
                         );
                         manager = AuthorizationManager::new(&self.config.mcp_url)
@@ -364,7 +376,11 @@ impl GoogleCalendarMcp {
 
         let response = match result {
             Ok(callback_url) => match self.complete_authorization(&callback_url).await {
-                Ok(()) => http_response(
+                Ok(AuthorizationOutcome::Connected) => http_response(
+                    "200 OK",
+                    "Google Calendar is connected. You can return to Slack and send your message again.",
+                ),
+                Ok(AuthorizationOutcome::Authorized) => http_response(
                     "200 OK",
                     "Google Calendar authorization is complete. You can return to Slack and send your message again.",
                 ),
@@ -399,7 +415,22 @@ impl GoogleCalendarMcp {
         Ok(callback_url.into())
     }
 
-    async fn complete_authorization(self: &Arc<Self>, callback_url: &str) -> Result<()> {
+    /// Finish the code exchange for a pending authorization, then connect
+    /// to MCP and discover the calendar tools on the spot so the user's
+    /// next message can be answered without a second round trip.
+    ///
+    /// The code exchange persists the grant through the credential vault
+    /// before the connection is attempted. When the vault is configured, a
+    /// failed handshake here is therefore not fatal: the authorization is
+    /// reported complete and [`Self::peer_for`] restores the connection on
+    /// the next request, where a `401`/`403` starts reauthorization and
+    /// anything else is surfaced as a connection error. Without a vault the
+    /// grant lives only in the dropped manager, so the failure is reported
+    /// and the user must authorize again.
+    async fn complete_authorization(
+        self: &Arc<Self>,
+        callback_url: &str,
+    ) -> Result<AuthorizationOutcome> {
         let state = callback_state(callback_url)?;
         let Some(mut pending) = self.pending.lock().await.remove(&state) else {
             bail!("OAuth callback state is unknown or expired");
@@ -410,7 +441,34 @@ impl GoogleCalendarMcp {
             .handle_callback_url(callback_url)
             .await
             .context("OAuth code exchange failed")?;
-        Ok(())
+        let manager = pending
+            .oauth
+            .into_authorization_manager()
+            .ok_or_else(|| anyhow!("OAuth authorization did not produce a manager"))?;
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            match manager.get_access_token().await {
+                Ok(token) => log_access_token_claims(&token),
+                Err(error) => tracing::debug!(error = %error, "no access token to inspect"),
+            }
+        }
+
+        match self.connect(pending.user, manager).await {
+            Ok(peer) => {
+                if let Err(error) = self.register_calendar_tools(&peer).await {
+                    tracing::warn!(error = %error, "Google Calendar tools could not be registered");
+                }
+                Ok(AuthorizationOutcome::Connected)
+            }
+            Err(error) if self.credential_vault.is_some() => {
+                tracing::warn!(
+                    error = %error,
+                    challenge = error.auth_challenge().unwrap_or("<none>"),
+                    "Google Calendar MCP connection failed after OAuth authorization; the stored grant will be retried on the next request"
+                );
+                Ok(AuthorizationOutcome::Authorized)
+            }
+            Err(error) => Err(error).context("MCP handshake failed after OAuth authorization"),
+        }
     }
 }
 
@@ -581,6 +639,51 @@ fn tool_error_message(result: &keycard_rmcp::rmcp::model::CallToolResult) -> Str
         .find(|text| !text.is_empty())
         .unwrap_or("Google Calendar could not complete the request")
         .to_owned()
+}
+
+/// Diagnostic: log the non-secret claims of an access token so a resource
+/// server's `invalid_token` rejection can be matched against what the token
+/// actually says. The signature and any opaque token are never logged.
+fn log_access_token_claims(token: &str) {
+    let mut parts = token.split('.');
+    let (Some(header), Some(payload), Some(_signature), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        tracing::debug!("access token is not a JWT; nothing to inspect");
+        return;
+    };
+    let decode = |part: &str| -> Option<serde_json::Value> {
+        let bytes = URL_SAFE_NO_PAD.decode(part).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    };
+    let (Some(header), Some(payload)) = (decode(header), decode(payload)) else {
+        tracing::debug!("access token JWT could not be decoded");
+        return;
+    };
+    let claim = |name: &str| {
+        payload
+            .get(name)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let claim_names: Vec<&str> = payload
+        .as_object()
+        .map(|object| object.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    tracing::debug!(
+        typ = %header.get("typ").cloned().unwrap_or(serde_json::Value::Null),
+        alg = %header.get("alg").cloned().unwrap_or(serde_json::Value::Null),
+        iss = %claim("iss"),
+        aud = %claim("aud"),
+        client_id = %claim("client_id"),
+        scope = %claim("scope"),
+        resource = %claim("resource"),
+        target = %claim("target"),
+        exp = %claim("exp"),
+        iat = %claim("iat"),
+        claims = ?claim_names,
+        "Google Calendar MCP access token claims"
+    );
 }
 
 fn oauth_state(authorization_url: &str) -> Result<String> {

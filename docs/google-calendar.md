@@ -102,10 +102,12 @@ Google account, so they cannot run in CI. Verify a deployment as follows:
    link visible only to that Slack user.
 5. Open the link in a browser, choose the intended Google account, review the
    consent screen, and approve it. The callback page should say that Calendar
-   authorization is complete. Do not copy the callback URL into logs or tickets
-   because it contains a short-lived authorization code and OAuth state.
-6. Repeat the Slack question. The agent should load the live Calendar tools and
-   answer from that account. Cross-check the returned event in Google Calendar.
+   is connected; if it instead says authorization is complete, the grant was
+   stored but the MCP handshake failed and will be retried on the next
+   request. Do not copy the callback URL into logs or tickets because it
+   contains a short-lived authorization code and OAuth state.
+6. Repeat the Slack question. The Calendar tools were discovered during the
+   callback, so the agent should answer from that account directly. Cross-check the returned event in Google Calendar.
    Use a read-only question for the first test; test create/update/delete only
    in a disposable calendar.
 7. Restart the replica without changing the encryption key or storage volume,
