@@ -239,6 +239,7 @@ impl GoogleCalendarMcp {
             .await
             .context("failed to initialize Google Calendar OAuth")?;
         let mut authorization_challenge = None;
+        let mut preregistered_client = None;
         if let Some(vault) = &self.credential_vault {
             let credential_store = vault.store(user);
             manager.set_credential_store(credential_store.clone());
@@ -254,6 +255,7 @@ impl GoogleCalendarMcp {
                             || error.auth_challenge().is_some() =>
                     {
                         authorization_challenge = error.auth_challenge().map(str::to_owned);
+                        preregistered_client = credential_store.stored_client_id().await;
                         tracing::warn!(
                             error = %error,
                             "Google Calendar authorization was rejected during connection; starting reauthorization"
@@ -279,6 +281,9 @@ impl GoogleCalendarMcp {
         let mut request = AuthorizationRequest::new(self.config.redirect_uri.as_str())
             .with_client_name("shortrib-agent")
             .with_application_type("web");
+        if let Some(client_id) = preregistered_client {
+            request = request.with_preregistered_client(client_id);
+        }
         if let Some(challenge) = authorization_challenge {
             request = request.with_challenge(challenge);
         }

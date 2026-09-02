@@ -209,6 +209,20 @@ impl EncryptedCredentialStore {
         Ok(())
     }
 
+    /// The OAuth client identifier from the persisted record, if any.
+    ///
+    /// Reused when restarting authorization so the agent replays its existing
+    /// dynamic client registration instead of registering a new client every
+    /// time. A fresh client would not carry the user's prior consent, and the
+    /// MCP gateway rejects its tokens, which loops the user through login.
+    pub(crate) async fn stored_client_id(&self) -> Option<String> {
+        self.load()
+            .await
+            .ok()
+            .flatten()
+            .map(|credentials| credentials.client_id)
+    }
+
     async fn load_bytes(&self) -> Result<Option<Vec<u8>>, AuthError> {
         let _guard = self.lock.lock().await;
         let encrypted = match tokio::fs::read(self.path.as_ref()).await {
