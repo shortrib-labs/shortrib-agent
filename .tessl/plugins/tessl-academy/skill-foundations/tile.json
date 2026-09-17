@@ -1,0 +1,26 @@
+{
+  "name": "tessl-academy/skill-foundations",
+  "version": "0.1.9",
+  "summary": "Guided walkthroughs for the Skill Foundations course: install and trigger your first skill, author one from scratch, place guidance across skills, MCP, and context files, bundle a multi-skill plugin, and publish across a team. Bundles the commit-conventions demo skill used throughout the course.",
+  "skills": {
+    "01-skills-in-30-minutes": {
+      "path": "skills/01-skills-in-30-minutes/SKILL.md"
+    },
+    "02-writing-your-first-skill": {
+      "path": "skills/02-writing-your-first-skill/SKILL.md"
+    },
+    "03-skills-vs-mcp-and-context-files": {
+      "path": "skills/03-skills-vs-mcp-and-context-files/SKILL.md"
+    },
+    "04-building-a-multi-skill-plugin": {
+      "path": "skills/04-building-a-multi-skill-plugin/SKILL.md"
+    },
+    "05-publishing-across-a-team": {
+      "path": "skills/05-publishing-across-a-team/SKILL.md"
+    },
+    "commit-conventions": {
+      "path": "skills/commit-conventions/SKILL.md"
+    }
+  },
+  "private": false
+}

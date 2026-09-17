@@ -1,0 +1,6 @@
+{
+  "name": "tessl-academy/skill-foundations",
+  "version": "0.1.9",
+  "description": "Guided walkthroughs for the Skill Foundations course: install and trigger your first skill, author one from scratch, place guidance across skills, MCP, and context files, bundle a multi-skill plugin, and publish across a team. Bundles the commit-conventions demo skill used throughout the course.",
+  "skills": "skills"
+}

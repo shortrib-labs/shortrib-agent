@@ -1,0 +1,13 @@
+{
+  "name": "shortrib-agent",
+  "mode": "vendored",
+  "dependencies": {
+    "tessl-academy/skill-foundations": {
+      "version": "0.1.9"
+    }
+  },
+  "agents": [
+    "claude-code",
+    "codex"
+  ]
+}
