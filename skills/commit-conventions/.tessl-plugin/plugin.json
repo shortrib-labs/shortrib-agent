@@ -1,0 +1,6 @@
+{
+  "name": "local/commit-conventions",
+  "version": "0.1.0",
+  "description": "Use when the user asks for a commit message or wants help summarizing staged changes.\n  Generates a Conventional Commits-formatted message from a diff.",
+  "private": true
+}

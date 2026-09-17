@@ -4,6 +4,9 @@
   "dependencies": {
     "tessl-academy/skill-foundations": {
       "version": "0.1.9"
+    },
+    "local/commit-conventions": {
+      "source": "file:./skills/commit-conventions"
     }
   },
   "agents": [
