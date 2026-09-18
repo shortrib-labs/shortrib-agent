@@ -18,7 +18,8 @@ description: |
    those changes.
 2. Review the commits on the current branch against the `HEAD` of the default
    branch (usually `main`).
-3. Check for a pull request/merge request template in the following locations:
+3. Check for a pull request/merge request template in the following locations.
+   You must do this every time, even if you have previously read it.
       * .github/PULL_REQUEST_TEMPLATE.md
       * .github/pull_request_template.md
       * .github/PULL_REQUEST_TEMPLATE/*.md
