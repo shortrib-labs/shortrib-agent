@@ -1,6 +1,6 @@
 {
   "name": "academy/git-hygiene",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "Skills for clean git workflows: commits, PRs, release notes",
   "private": true
 }
