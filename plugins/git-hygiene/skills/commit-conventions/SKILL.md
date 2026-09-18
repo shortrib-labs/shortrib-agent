@@ -21,8 +21,8 @@ a commit message.
 4. Include a longer commit body if:
      * The intent of the change is unclear from the subject line
      * You are introducing a breaking change
-5. Show the message to the user and ask them if they would like to use it for
-   a commit.
+5. Show the message to the user (see examples) and ask them if they would like
+   to use it for a commit.
 
 ## Type table
 
@@ -51,3 +51,29 @@ a commit message.
    a particular scope. Example: `feat(api):`, `perf(ui):`
 6. Use lowercase.
 7. Do not end with punctuation.
+
+## Examples
+
+### Change
+
+```
+feat: enables metadata edit
+```
+
+### Scoped change
+
+```
+feat(ui): moves metadata to its own tab
+```
+
+### Change requiring more detail
+
+```
+chore: points git-hygiene at local source
+
+Publishing 0.1.1 replaced the file source with a registry version pin, so edits
+under plugins/git-hygiene stopped reaching the agent. The vendored copy comes
+along at 0.1.1, carrying the rewritten descriptions and the new validation step.
+```
+
+
