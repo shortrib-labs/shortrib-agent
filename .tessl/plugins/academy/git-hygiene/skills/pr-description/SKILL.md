@@ -1,16 +1,17 @@
 ---
 name: pr-description
 description: |
-  Describes a pull request (or merge request) for all currently committed work. Use when the user wants to create a pull request after any requisite commits have been made.
+  Reviews the commits on the current branch, locates PR/MR templates, and drafts a subject line and body for the pull request/merge request. Use when the user wants to create or open a pull request, merge request, MR, or PR after any requisite commits have been made.
 ---
 
 # pr-description
 
 ## When you're triggered
 
-* The user wants to create a pull request (or merge request) for the commits on their current branch
-* The user asks for a pull request (or merge request) description for the
-  commits on their current branch
+* The user wants to open or create a pull request (or merge request) for the
+  commits on their current branch.
+* The user asks for a pull request description for the commits on their
+  current branch.
 
 ## What to do
 
@@ -31,6 +32,10 @@ description: |
       * Create the body for the pull request following the "Body rules".
 5. Show the description to the user and ask them if they would like to use it for
    a new pull request.
+6. Confirm the PR:
+      * Conforms to the template, OR 
+      * Follows the rules for subject line (50 character limit) and body
+        (heading format matches, no forbidden phrases)
 
 ## Subject line rules
 
@@ -69,4 +74,21 @@ conversation with them. Set context the diff cannot; never retrace the diff.
    function", which CSS class a template uses, which color token a date
    renders in. If a sentence would read as a line-by-line summary, cut it.
 
+## Example
 
+```
+Removes troublesome preference files
+
+TL;DR
+-----
+
+Deltes preferences files that caused issues with bootstrapping
+
+Details
+-------
+
+Gets rid of two packaes that were causing too many issues in terms
+of getting a bootstrap to run cleanly: `global` and `terminal`. The
+likely causse was the files being overwritten during the time it
+took to link them and to convert the links to hard links.
+```

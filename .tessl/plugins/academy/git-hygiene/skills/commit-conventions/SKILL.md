@@ -1,7 +1,7 @@
 ---
 name: commit-conventions
 description: |
-  Writes a commit message for our staged changes using the conventional commits conventions. Use when the user asks to commit or for help with a commit message.
+  Drafts a commit message for our staged changes using the conventional commits conventions, classifies the change type, and adds a commit body for breaking/tricky changes. Use when the user asks to commit or for help with a commit message.
 ---
 
 # commit-conventions
