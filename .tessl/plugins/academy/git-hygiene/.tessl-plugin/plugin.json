@@ -1,0 +1,5 @@
+{
+  "name": "academy/git-hygiene",
+  "version": "0.1.0",
+  "description": "Skills for clean git workflows: commits, PRs, release notes"
+}
