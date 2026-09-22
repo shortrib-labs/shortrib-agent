@@ -30,12 +30,12 @@ description: |
    If you do not find a template:
       * Draft a subject line following the "Subject line rules".
       * Create the body for the pull request following the "Body rules".
-5. Show the description to the user and ask them if they would like to use it for
-   a new pull request.
-6. Confirm the PR:
+5. Rescan the drafted body before presenting it to the user, confirm it:
       * Conforms to the template, OR 
       * Follows the rules for subject line (50 character limit) and body
         (heading format matches, no forbidden phrases)
+6. Show the description to the user and ask them if they would like to use it for
+   a new pull request.
 
 ## Subject line rules
 
@@ -49,7 +49,7 @@ description: |
 Write as an experienced developer sharing knowledge with colleagues:
 conversational and practitioner-focused, direct and no-nonsense, but not dry or
 formal. The body is a narrative for the reviewer and the start of a
-conversation with them. Set context the diff cannot; never retrace the diff.
+conversation with them.
 
 1. Structure the body in two sections: `TL;DR` and `Details`.
 2. Use setext underlines for both headers, five dashes under `TL;DR` and seven
@@ -82,13 +82,13 @@ Removes troublesome preference files
 TL;DR
 -----
 
-Deltes preferences files that caused issues with bootstrapping
+Deletes preferences files that caused issues with bootstrapping
 
 Details
 -------
 
-Gets rid of two packaes that were causing too many issues in terms
+Gets rid of two packages that were causing too many issues in terms
 of getting a bootstrap to run cleanly: `global` and `terminal`. The
-likely causse was the files being overwritten during the time it
+likely cause was the files being overwritten during the time it
 took to link them and to convert the links to hard links.
 ```

@@ -1,5 +1,5 @@
 {
-  "name": "shortrib-agent",
+  "name": "shortrib-labs/shortrib-agent",
   "mode": "vendored",
   "dependencies": {
     "tessl-academy/skill-foundations": {
