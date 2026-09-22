@@ -1,0 +1,56 @@
+{
+  "context": "The agent is given a git repository where the /users/list endpoint has been renamed to /users/index in the api/ module and staged. The commit is a breaking change confined to the api scope. The agent must review the staged diff, write a commit message with a scoped prefix and a body explaining the breaking change, and save it to commit-message.txt.",
+  "type": "weighted_checklist",
+  "checklist": [
+    {
+      "name": "Parenthesised scope format",
+      "description": "The subject line of commit-message.txt contains a scope in parentheses between the type and the colon — e.g. type(scope): — not just a plain type: prefix",
+      "max_score": 15
+    },
+    {
+      "name": "Correct scope name",
+      "description": "The scope in the subject line identifies the api component (i.e. the parenthesised value is 'api' or similar, not a generic or unrelated label)",
+      "max_score": 10
+    },
+    {
+      "name": "Commit body present",
+      "description": "commit-message.txt has at least one non-empty line after a blank line that follows the subject — a body section is present",
+      "max_score": 20
+    },
+    {
+      "name": "Body explains breaking nature",
+      "description": "The body text references the breaking or incompatible nature of the change — e.g. uses at least one of: 'breaking', 'break', 'callers', 'clients', 'incompatible', 'old path', 'migration', 'backward'",
+      "max_score": 15
+    },
+    {
+      "name": "Subject ≤50 characters",
+      "description": "The subject line (first line) of commit-message.txt is no longer than 50 characters",
+      "max_score": 10
+    },
+    {
+      "name": "Conventional commit type",
+      "description": "The subject line begins with a recognised conventional commit type (feat, fix, refactor, chore, docs, ci, perf, build, or test) before the optional scope and colon",
+      "max_score": 10
+    },
+    {
+      "name": "Lowercase subject",
+      "description": "The subject line is written in lowercase (the description part after the colon does not begin with a capital letter)",
+      "max_score": 5
+    },
+    {
+      "name": "No trailing punctuation",
+      "description": "The subject line does NOT end with a full stop, exclamation mark, or question mark",
+      "max_score": 5
+    },
+    {
+      "name": "Active voice subject",
+      "description": "The subject line uses active voice — the commit is the implied actor (e.g. 'renames', 'updates', 'changes') and does NOT use passive constructions (e.g. 'was renamed', 'is updated')",
+      "max_score": 5
+    },
+    {
+      "name": "Body adds new information",
+      "description": "The body does NOT merely restate the subject line — it provides additional context, rationale, or impact details beyond what the subject says",
+      "max_score": 5
+    }
+  ]
+}

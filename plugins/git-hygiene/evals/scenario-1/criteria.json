@@ -1,0 +1,56 @@
+{
+  "context": "Tests whether the agent writes a PR body that avoids forbidden self-referential phrases, uses prose-only formatting (no markdown lists), maintains active voice, structures the body into TL;DR and Details sections with correct setext underlines, avoids summarising visible diff artifacts, and keeps the two sections complementary rather than redundant.",
+  "type": "weighted_checklist",
+  "checklist": [
+    {
+      "name": "No forbidden phrases",
+      "description": "pr-description.md contains none of the following phrases anywhere (case-insensitive): 'this PR', 'this change', 'this commit', 'this update', 'the fix', 'the solution', 'the change'",
+      "max_score": 15
+    },
+    {
+      "name": "Prose only — no list markers",
+      "description": "The body sections in pr-description.md contain no lines that begin with a markdown list marker: '-', '*', '+', or a digit followed by '.' (e.g. '1.')",
+      "max_score": 10
+    },
+    {
+      "name": "Active voice throughout",
+      "description": "pr-description.md contains none of the following passive-voice patterns: 'was returned', 'is rejected', 'were changed', 'is fixed', 'was fixed', 'has been', 'was corrected', 'are returned'",
+      "max_score": 10
+    },
+    {
+      "name": "TL;DR section with setext underline",
+      "description": "pr-description.md contains the text 'TL;DR' followed on the very next line by exactly five dashes ('-----') and nothing else on that line",
+      "max_score": 10
+    },
+    {
+      "name": "Details section with setext underline",
+      "description": "pr-description.md contains the text 'Details' followed on the very next line by a run of at least seven dashes ('-------') and nothing else on that line",
+      "max_score": 10
+    },
+    {
+      "name": "No filename enumeration",
+      "description": "pr-description.md body prose does not name 'auth.py' (or 'auth_v1.py' / 'auth_v2.py') as a file — file names visible in the diff should not be listed in the description",
+      "max_score": 10
+    },
+    {
+      "name": "No function or class name enumeration",
+      "description": "pr-description.md body prose does not call out specific identifiers from the diff such as 'verify_token', 'do_POST', or 'AuthHandler' by name",
+      "max_score": 10
+    },
+    {
+      "name": "Details adds beyond TL;DR",
+      "description": "The Details section in pr-description.md provides information not already stated in TL;DR — the two sections are complementary rather than the Details being a restatement of TL;DR",
+      "max_score": 10
+    },
+    {
+      "name": "Subject line ≤ 50 characters",
+      "description": "The first line of pr-description.md (the subject) is at most 50 characters long",
+      "max_score": 10
+    },
+    {
+      "name": "Subject no trailing punctuation",
+      "description": "The first line of pr-description.md does not end with a period ('.'), exclamation mark ('!'), or question mark ('?')",
+      "max_score": 5
+    }
+  ]
+}

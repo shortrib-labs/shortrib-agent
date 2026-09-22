@@ -1,0 +1,61 @@
+{
+  "context": "Tests whether the agent produces a PR description with the correct two-section body structure (TL;DR and Details), setext underlines with the exact prescribed dash counts, prose-only formatting, active voice, and a well-formed subject line — all without the task hinting at any of these requirements.",
+  "type": "weighted_checklist",
+  "checklist": [
+    {
+      "name": "TL;DR section present",
+      "description": "pr-description.md contains a section header with the exact text 'TL;DR' (case-sensitive)",
+      "max_score": 10
+    },
+    {
+      "name": "TL;DR setext underline",
+      "description": "The 'TL;DR' header in pr-description.md is followed immediately by a line containing exactly five dashes (-----) and nothing else",
+      "max_score": 15
+    },
+    {
+      "name": "Details section present",
+      "description": "pr-description.md contains a section header with the exact text 'Details' (case-sensitive)",
+      "max_score": 10
+    },
+    {
+      "name": "Details setext underline",
+      "description": "The 'Details' header in pr-description.md is followed immediately by a line containing exactly seven dashes (-------) and nothing else",
+      "max_score": 15
+    },
+    {
+      "name": "Exactly two sections",
+      "description": "pr-description.md contains no section headers other than 'TL;DR' and 'Details' — no ATX headings (lines starting with #) and no other setext underlined headers appear in the body",
+      "max_score": 5
+    },
+    {
+      "name": "Prose only",
+      "description": "The body of pr-description.md contains no bullet points (lines starting with -, *, or •) and no numbered list items (lines starting with a digit followed by a period or parenthesis)",
+      "max_score": 10
+    },
+    {
+      "name": "No forbidden phrases",
+      "description": "pr-description.md does NOT contain any of the following phrases (case-insensitive): 'this PR', 'this change', 'this commit', 'this update', 'the fix', 'the solution', 'the change'",
+      "max_score": 10
+    },
+    {
+      "name": "Active voice",
+      "description": "The body in pr-description.md contains no passive-voice constructions — specifically no instances of 'was [verb]ed', 'were [verb]ed', 'is [verb]ed by', or 'are [verb]ed by'",
+      "max_score": 5
+    },
+    {
+      "name": "Subject line length",
+      "description": "The first line of pr-description.md (the subject line) is 50 characters or fewer",
+      "max_score": 10
+    },
+    {
+      "name": "Subject no trailing punctuation",
+      "description": "The subject line (first line of pr-description.md) does NOT end with a period, comma, exclamation mark, or question mark",
+      "max_score": 5
+    },
+    {
+      "name": "Backticks for identifiers",
+      "description": "pr-description.md uses backtick-delimited inline code for at least one technical identifier such as a function name, file path, environment variable, or command",
+      "max_score": 5
+    }
+  ]
+}

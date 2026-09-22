@@ -1,0 +1,46 @@
+{
+  "context": "Tests whether the agent discovers the repository's PR template at .github/PULL_REQUEST_TEMPLATE.md and follows it fully, including the HTML comment directives embedded in each section. Agents without skill guidance may skip the template entirely or ignore the comment instructions.",
+  "type": "weighted_checklist",
+  "checklist": [
+    {
+      "name": "What heading present",
+      "description": "The file pr-description.md contains a '## What' section heading",
+      "max_score": 10
+    },
+    {
+      "name": "Why heading present",
+      "description": "The file pr-description.md contains a '## Why' section heading",
+      "max_score": 10
+    },
+    {
+      "name": "Testing heading present",
+      "description": "The file pr-description.md contains a '## Testing' section heading",
+      "max_score": 10
+    },
+    {
+      "name": "No TL;DR heading",
+      "description": "The file pr-description.md does NOT contain 'TL;DR' as a section heading — the template structure replaces the default body format",
+      "max_score": 10
+    },
+    {
+      "name": "No Details heading",
+      "description": "The file pr-description.md does NOT contain 'Details' as a section heading",
+      "max_score": 10
+    },
+    {
+      "name": "Ticket reference in What",
+      "description": "The ## What section includes a reference to a ticket or issue number (e.g. 'Closes #47', 'Fixes #47', 'Addresses #47', or similar identifier) — following the HTML comment directive to include the ticket number",
+      "max_score": 20
+    },
+    {
+      "name": "Testing specificity",
+      "description": "The ## Testing section describes specific steps taken, commands run, or scenarios checked — not merely a statement that testing was done (e.g. 'I ran the tests') — following the HTML comment directive to explain HOW testing was performed",
+      "max_score": 20
+    },
+    {
+      "name": "Why explains motivation",
+      "description": "The ## Why section explains the reason or motivation for the change (user need, business value, or technical justification) rather than just restating what was implemented",
+      "max_score": 10
+    }
+  ]
+}

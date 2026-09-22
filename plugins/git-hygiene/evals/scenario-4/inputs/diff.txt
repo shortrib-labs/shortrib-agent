@@ -1,0 +1,113 @@
+diff --git a/src/profiles/__init__.py b/src/profiles/__init__.py
+index 3a1d8f2..c72e091 100644
+--- a/src/profiles/__init__.py
++++ b/src/profiles/__init__.py
+@@ -1,5 +1,6 @@
+ from .models import UserProfile
+ from .views import profile_view, edit_profile_view
++from .search import search_profiles
+
+-__all__ = ["UserProfile", "profile_view", "edit_profile_view"]
++__all__ = ["UserProfile", "profile_view", "edit_profile_view", "search_profiles"]
+diff --git a/src/profiles/search.py b/src/profiles/search.py
+new file mode 100644
+index 0000000..b8a4f3d
+--- /dev/null
++++ b/src/profiles/search.py
+@@ -0,0 +1,52 @@
++"""User profile search functionality."""
++
++from typing import Optional
++from .models import UserProfile
++from .database import db
++
++
++def search_profiles(
++    query: str,
++    limit: int = 20,
++    offset: int = 0,
++    active_only: bool = True,
++) -> list[UserProfile]:
++    """Search user profiles by name, email, or username.
++
++    Args:
++        query: Search string matched against name, email, and username fields.
++        limit: Maximum number of results to return (default 20).
++        offset: Number of results to skip for pagination (default 0).
++        active_only: When True, excludes deactivated accounts (default True).
++
++    Returns:
++        List of UserProfile objects matching the search query.
++    """
++    filters = []
++
++    if active_only:
++        filters.append(UserProfile.is_active == True)
++
++    results = (
++        db.session.query(UserProfile)
++        .filter(*filters)
++        .filter(
++            (UserProfile.name.ilike(f"%{query}%"))
++            | (UserProfile.email.ilike(f"%{query}%"))
++            | (UserProfile.username.ilike(f"%{query}%"))
++        )
++        .order_by(UserProfile.name)
++        .limit(limit)
++        .offset(offset)
++        .all()
++    )
++    return results
++
++
++def search_profiles_count(query: str, active_only: bool = True) -> int:
++    """Return total count of profiles matching a search query (for pagination)."""
++    filters = []
++    if active_only:
++        filters.append(UserProfile.is_active == True)
++    return (
++        db.session.query(UserProfile)
++        .filter(*filters)
++        .filter(
++            (UserProfile.name.ilike(f"%{query}%"))
++            | (UserProfile.email.ilike(f"%{query}%"))
++            | (UserProfile.username.ilike(f"%{query}%"))
++        )
++        .count()
++    )
+diff --git a/src/profiles/views.py b/src/profiles/views.py
+index 9c2a1f4..e4b7d61 100644
+--- a/src/profiles/views.py
++++ b/src/profiles/views.py
+@@ -1,6 +1,7 @@
+ from flask import render_template, request, jsonify
+ from .models import UserProfile
++from .search import search_profiles, search_profiles_count
+
+
+ def profile_view(user_id: int):
+@@ -12,3 +13,22 @@ def edit_profile_view(user_id: int):
+     profile = UserProfile.query.get_or_404(user_id)
+     # ... edit logic
+     return render_template("profiles/edit.html", profile=profile)
++
++
++def profile_search_view():
++    """Handle GET /profiles/search?q=<query>&page=<page>."""
++    query = request.args.get("q", "").strip()
++    page = max(1, int(request.args.get("page", 1)))
++    per_page = 20
++    offset = (page - 1) * per_page
++
++    if not query:
++        return jsonify({"results": [], "total": 0, "page": page})
++
++    results = search_profiles(query, limit=per_page, offset=offset)
++    total = search_profiles_count(query)
++
++    return jsonify({
++        "results": [p.to_dict() for p in results],
++        "total": total,
++        "page": page,
++        "pages": (total + per_page - 1) // per_page,
++    })

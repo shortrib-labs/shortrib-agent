@@ -1,0 +1,61 @@
+{
+  "context": "The agent reads a git diff introducing a new user-facing search feature for user profiles and writes a commit message to commit-message.txt. The criteria verify that the commit subject line follows conventional commit formatting rules: correct type classification, proper prefix format, length limit, lowercase, no trailing punctuation, and active voice.",
+  "type": "weighted_checklist",
+  "checklist": [
+    {
+      "name": "Standard type keyword",
+      "description": "The subject line in commit-message.txt begins with a recognized conventional commit type keyword: one of feat, fix, refactor, chore, docs, ci, perf, build, or test",
+      "max_score": 8
+    },
+    {
+      "name": "Correct type: feat",
+      "description": "The type used is `feat` — the staged changes introduce new user-facing search functionality, which is a feature addition, not a fix, refactor, or other type",
+      "max_score": 20
+    },
+    {
+      "name": "Type opens the subject line",
+      "description": "The type keyword appears at the very start of the subject line, with nothing before it (no leading spaces, dashes, or other characters)",
+      "max_score": 7
+    },
+    {
+      "name": "Colon follows type",
+      "description": "The type keyword is immediately followed by a colon with no space between the type and the colon (e.g., `feat:` not `feat :` or `feat -`)",
+      "max_score": 8
+    },
+    {
+      "name": "Subject within 50 characters",
+      "description": "The entire subject line (first line of commit-message.txt), including the type prefix and colon, is 50 characters or fewer in total length",
+      "max_score": 15
+    },
+    {
+      "name": "Type prefix in lowercase",
+      "description": "The type keyword itself is lowercase (e.g., `feat:` not `Feat:` or `FEAT:`)",
+      "max_score": 7
+    },
+    {
+      "name": "Description in lowercase",
+      "description": "The text following the colon in the subject line uses lowercase letters — no mid-sentence capitalization or title-cased words (acronyms excepted)",
+      "max_score": 8
+    },
+    {
+      "name": "No trailing punctuation",
+      "description": "The final character of the subject line is not a period (`.`), exclamation mark (`!`), question mark (`?`), comma (`,`), or semicolon (`;`)",
+      "max_score": 12
+    },
+    {
+      "name": "Active voice",
+      "description": "The subject line description uses active voice (e.g., 'adds search to user profiles', 'introduces profile search endpoint') — not passive constructions such as 'search was added', 'profile search is introduced', or 'search functionality has been implemented'",
+      "max_score": 10
+    },
+    {
+      "name": "Commit as implied subject",
+      "description": "The description after the colon is phrased with the commit as the implied subject — it reads as an action the commit performs (e.g., 'adds…', 'introduces…', 'enables…') rather than a noun phrase or a sentence with an explicit external subject",
+      "max_score": 5
+    },
+    {
+      "name": "Flags migrations",
+      "description": "If the diff includes a database migration, the body explicitly flags it",
+      "max_score": 10
+    }
+  ]
+}

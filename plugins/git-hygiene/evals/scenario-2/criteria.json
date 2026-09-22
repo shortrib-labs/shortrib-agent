@@ -1,0 +1,56 @@
+{
+  "context": "The agent must draft a pull request description for a lodash patch upgrade and save it to pr-description.md. The evaluation focuses on whether the subject line follows the formatting rules (character limit, active voice, no trailing punctuation) and whether the body uses backtick formatting for version numbers.",
+  "type": "weighted_checklist",
+  "checklist": [
+    {
+      "name": "Subject length",
+      "description": "The first non-blank line of pr-description.md (the subject line) is no longer than 50 characters",
+      "max_score": 15
+    },
+    {
+      "name": "No trailing punctuation",
+      "description": "The subject line does not end with any punctuation character (period, exclamation mark, question mark, comma, colon, semicolon, etc.)",
+      "max_score": 10
+    },
+    {
+      "name": "Active voice subject",
+      "description": "The subject line uses active voice with the changes as the implied subject — does NOT use passive constructions such as 'lodash was upgraded', 'dependency has been bumped', or 'version updated to'",
+      "max_score": 10
+    },
+    {
+      "name": "One-phrase intent",
+      "description": "The subject line describes the overall change in a single concise phrase (not multiple clauses joined by 'and', 'from ... to ...', or a full sentence with a verb and object spelled out in full)",
+      "max_score": 10
+    },
+    {
+      "name": "Backtick version numbers",
+      "description": "Version numbers (4.17.20 and/or 4.17.21) appear in backticks somewhere in the body of pr-description.md",
+      "max_score": 15
+    },
+    {
+      "name": "TL;DR header",
+      "description": "The body contains a 'TL;DR' header underlined with exactly five dashes (-----) as a setext-style heading",
+      "max_score": 10
+    },
+    {
+      "name": "Details header",
+      "description": "The body contains a 'Details' header underlined with exactly seven dashes (-------) as a setext-style heading",
+      "max_score": 10
+    },
+    {
+      "name": "No forbidden phrases",
+      "description": "The body does not contain any of the following phrases (case-insensitive): 'this PR', 'this change', 'this commit', 'this update', 'the fix', 'the solution', 'the change'",
+      "max_score": 10
+    },
+    {
+      "name": "Prose only",
+      "description": "The TL;DR and Details sections contain only prose — no bullet points (lines starting with - or *), numbered lists, or markdown tables",
+      "max_score": 5
+    },
+    {
+      "name": "Active body voice",
+      "description": "The body maintains active voice throughout — does not contain passive constructions such as 'was upgraded', 'was bumped', 'is patched', 'has been updated'",
+      "max_score": 5
+    }
+  ]
+}

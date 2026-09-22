@@ -1,0 +1,20 @@
+{
+  "name": "node-service",
+  "version": "1.0.0",
+  "description": "Internal Node.js service",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "lodash": "4.17.20",
+    "moment": "^2.29.4"
+  },
+  "devDependencies": {
+    "eslint": "^8.0.0",
+    "jest": "^29.0.0"
+  },
+  "license": "MIT"
+}
