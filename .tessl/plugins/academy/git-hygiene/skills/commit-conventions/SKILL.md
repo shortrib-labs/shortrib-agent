@@ -8,21 +8,23 @@ description: |
 
 ## When you're triggered
 
-* The user wants to commit their staged changes to provide
-a commit message.
-* The user asks for a commit message for their current staged changes.
+* The user asks to commit their staged changes, or asks for help drafting a commit message for them.
 
 ## What to do
 
 1. Review the staged changes against the currently committed files.
 2. Classify the type of the changes based on the conventional commits
    conventions described under "Type table".
-3. Draft a subject line following the "Subject line rules".
-4. Include a longer commit body if:
+3. Before drafting the subject line, state in one line why the nearest
+   alternative type (`fix` vs. `feat`, `build` vs. `ci`, etc.) is wrong.
+4. Draft a subject line following the "Subject line rules".
+5. Include a longer commit body if:
      * The intent of the change is unclear from the subject line
      * You are introducing a breaking change
-5. Show the message to the user (see examples) and ask them if they would like
-   to use it for a commit.
+6. Show the message to the user (see examples) and ask them if they would like
+to use it for a commit. Commit only after they explicitly approve it.
+7. If the user requests changes, revise the subject and/or body and re-show
+the message before committing.
 
 ## Type table
 
