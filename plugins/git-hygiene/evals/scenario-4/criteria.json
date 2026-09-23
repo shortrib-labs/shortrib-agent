@@ -5,7 +5,7 @@
     {
       "name": "Standard type keyword",
       "description": "The subject line in commit-message.txt begins with a recognized conventional commit type keyword: one of feat, fix, refactor, chore, docs, ci, perf, build, or test",
-      "max_score": 8
+      "max_score": 7
     },
     {
       "name": "Correct type: feat",
@@ -20,7 +20,7 @@
     {
       "name": "Colon follows type",
       "description": "The type keyword is immediately followed by a colon with no space between the type and the colon (e.g., `feat:` not `feat :` or `feat -`)",
-      "max_score": 8
+      "max_score": 7
     },
     {
       "name": "Subject within 50 characters",
@@ -30,17 +30,17 @@
     {
       "name": "Type prefix in lowercase",
       "description": "The type keyword itself is lowercase (e.g., `feat:` not `Feat:` or `FEAT:`)",
-      "max_score": 7
+      "max_score": 5
     },
     {
       "name": "Description in lowercase",
       "description": "The text following the colon in the subject line uses lowercase letters — no mid-sentence capitalization or title-cased words (acronyms excepted)",
-      "max_score": 8
+      "max_score": 7
     },
     {
       "name": "No trailing punctuation",
       "description": "The final character of the subject line is not a period (`.`), exclamation mark (`!`), question mark (`?`), comma (`,`), or semicolon (`;`)",
-      "max_score": 12
+      "max_score": 5
     },
     {
       "name": "Active voice",
@@ -50,12 +50,12 @@
     {
       "name": "Commit as implied subject",
       "description": "The description after the colon is phrased with the commit as the implied subject — it reads as an action the commit performs (e.g., 'adds…', 'introduces…', 'enables…') rather than a noun phrase or a sentence with an explicit external subject",
-      "max_score": 5
+      "max_score": 10
     },
     {
-      "name": "Flags migrations",
-      "description": "If the diff includes a database migration, the body explicitly flags it",
-      "max_score": 10
+      "name": "No body provided",
+      "description": "The message does not contain a body when subject line explains the change clearly.",
+      "max_score": 7
     }
   ]
 }
