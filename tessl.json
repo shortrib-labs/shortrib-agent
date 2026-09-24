@@ -6,7 +6,7 @@
       "version": "0.1.9"
     },
     "academy/git-hygiene": {
-      "source": "file:./plugins/git-hygiene"
+      "version": "0.1.4"
     }
   },
   "agents": [
