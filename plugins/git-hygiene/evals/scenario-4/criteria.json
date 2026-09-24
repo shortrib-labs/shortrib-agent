@@ -1,5 +1,5 @@
 {
-  "context": "The agent reads a git diff introducing a new user-facing search feature for user profiles and writes a commit message to commit-message.txt. The criteria verify that the commit subject line follows conventional commit formatting rules: correct type classification, proper prefix format, length limit, lowercase, no trailing punctuation, and active voice.",
+  "context": "The agent reads a git diff introducing a new user-facing search feature for user profiles and writes a commit message to commit-message.txt. The criteria verify that the commit subject line follows conventional commit formatting rules: correct type classification, proper prefix format, length limit, lowercase, no trailing punctuation, active voice, and no body, since the subject line alone explains this non-breaking feature.",
   "type": "weighted_checklist",
   "checklist": [
     {
@@ -54,7 +54,7 @@
     },
     {
       "name": "No body provided",
-      "description": "The message does not contain a body when subject line explains the change clearly.",
+      "description": "commit-message.txt contains only the subject line, with no body after it",
       "max_score": 7
     }
   ]
