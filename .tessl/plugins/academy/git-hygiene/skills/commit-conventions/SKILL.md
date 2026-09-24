@@ -1,7 +1,7 @@
 ---
 name: commit-conventions
 description: |
-  Drafts a commit message for our staged changes using the conventional commits conventions, classifies the change type, and adds a commit body for breaking/tricky changes. Use when the user asks to commit or for help with a commit message.
+  Drafts a commit message for our staged changes using the conventional commits conventions, classifies the change type, and adds a commit body for breaking changes or ones whose reason isn't visible in the diff. Use when the user asks to commit or for help with a commit message.
 ---
 
 # commit-conventions
@@ -18,13 +18,13 @@ description: |
 3. Before drafting the subject line, state in one line why the nearest
    alternative type (`fix` vs. `feat`, `build` vs. `ci`, etc.) is wrong.
 4. Draft a subject line following the "Subject line rules".
-5. Include a longer commit body if:
-     * The intent of the change is unclear from the subject line
-     * You are introducing a breaking change
+5. Write only the subject line unless the change is breaking, or the reason
+   for it can't be seen in the diff. Never use the body to describe what the
+   diff already shows.
 6. Show the message to the user (see examples) and ask them if they would like
-to use it for a commit. Commit only after they explicitly approve it.
+   to use it for a commit. Commit only after they explicitly approve it.
 7. If the user requests changes, revise the subject and/or body and re-show
-the message before committing.
+   the message before committing.
 
 ## Type table
 
